@@ -35,7 +35,7 @@ export function pageVerdict({ referenceCount, modelCount, tolerancePct = 5 }) {
 }
 
 // The gate: >= 4 of 5 pages within tolerance, no invented passages on accepted pages, and tier agreement on every clear page.
-export function gateResult(pages) {
+export function gateResult(pages, { stopped = null } = {}) {
   const n = pages.length;
   const within = pages.filter((p) => p.withinTolerance).length;
   const accepted = pages.filter((p) => p.withinTolerance);
@@ -48,7 +48,9 @@ export function gateResult(pages) {
     inventedOnAccepted,
     clearPages: clear.length,
     clearTierMismatch,
-    passed: n === 5 && within >= 4 && inventedOnAccepted === 0 && clearTierMismatch === 0,
+    stopped: stopped ?? null,
+    // A stopped session can never pass, whatever the completed pages show.
+    passed: stopped == null && n === 5 && within >= 4 && inventedOnAccepted === 0 && clearTierMismatch === 0,
   };
 }
 
@@ -85,6 +87,9 @@ export async function liveCall({ apiKey, settings, session, realFetch, image, on
     // no automatic retry, ever. An ambiguous outcome (timeout/network/5xx) keeps its slot and is reported as such.
     return { ok: false, slot, errorCode: code, ambiguous: e instanceof ProviderError ? e.unknownOutcome === true : true, transient: null };
   }
+  // The guard validates usage, model and stop reason on the raw response. If it rejected THIS response the call is not
+  // a success, even when the transcript looks perfect: a response we cannot trust must not count toward any result.
+  if (session.stopped) return { ok: false, slot, errorCode: `guard_${session.stopped}`.slice(0, 48), ambiguous: false, transient: null };
   let v;
   try { v = validateModelOutput(raw); } catch { return { ok: false, slot, errorCode: 'schema_invalid', ambiguous: false, transient: null }; }
   const ev = evaluate({ transcript: v.transcript, illegibleCount: v.illegible_count, pageIssues: v.page_issues });

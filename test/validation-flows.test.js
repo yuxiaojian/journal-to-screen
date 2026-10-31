@@ -40,9 +40,11 @@ test('dry run: no key requested, no network, prints the production request summa
 });
 
 test('smoke: key -> yes -> per-call confirmation; two calls, numbers on screen, key never printed', async () => {
-  const net = fakeNet([good(toolInput(19)), good({ transcript: '', illegible_count: 0, page_issues: ['blank'] })]);
+  const net = fakeNet([good({ transcript: SMOKE_TEXT.lines.join('\n'), illegible_count: 0, page_issues: ['not_handwriting'] }), good({ transcript: '', illegible_count: 0, page_issues: ['blank'] })]);
   const { c, tty, text } = ctx({ answers: [`${FAKE_KEY}\r`, 'yes\r', 'y\r', 'y\r'], net });
-  const { session } = await smoke(c);
+  const { session, passed } = await smoke(c);
+  assert.equal(passed, true);
+  assert.match(text(), /SMOKE RESULT: PASS/);
   assert.equal(net.calls.length, 2);
   assert.equal(session.used, 2);
   assert.equal(net.calls[0].init.redirect, 'error');
@@ -108,10 +110,14 @@ test('smoke: a failed or ambiguous call stops the session, keeps its slot, and i
 test('smoke: an over-bound usage reading stops the session before the second call', async () => {
   const net = fakeNet([good(toolInput(19), { usage: { input_tokens: 999999, output_tokens: 10 } }), good()]);
   const { c, text } = ctx({ answers: [`${FAKE_KEY}\r`, 'yes\r', 'y\r', 'y\r'], net });
-  const { session } = await smoke(c);
+  const { session, passed } = await smoke(c);
   assert.equal(net.calls.length, 1);
   assert.equal(session.stopped, 'input_over_bound');
-  assert.match(text(), /Stopped before blank: input_over_bound/);
+  assert.equal(passed, false);
+  // the rejected response is an unsuccessful call (not a success with a stop afterwards), so no model text is shown
+  assert.match(text(), /smoke: FAILED code=guard_input_over_bound/);
+  assert.match(text(), /SMOKE RESULT: FAIL/);
+  assert.ok(!/--- model text/.test(text()), 'a rejected response is never surfaced as a result');
 });
 
 // ---------- the five private pages ----------
@@ -188,7 +194,7 @@ test('pages: the gate FAILS when the owner reports an invented passage on an acc
   assert.equal(gate.passed, false);
 });
 
-test('pages: a stopped session (bad usage) ends the run; evidence still records only the pages completed and is not a pass', async () => {
+test('pages: a stopped session (bad usage) ends the run; the rejected page is excluded and the gate cannot pass', async () => {
   const dir = makePages(5); await realJpegs(dir);
   const res = path.join(outDir(), 'r.json');
   const script = [good({ transcript: Array.from({ length: 51 }, () => 'w').join(' '), illegible_count: 0, page_issues: [] }, { usage: { input_tokens: 10 ** 7, output_tokens: 5 } }), good()];
@@ -196,8 +202,9 @@ test('pages: a stopped session (bad usage) ends the run; evidence still records 
   const { c } = ctx({ answers, net: fakeNet(script) });
   const { gate, session } = await pages(c, { dir, results: res, repoRoot: REPO_ROOT });
   assert.equal(session.stopped, 'input_over_bound');
-  assert.equal(gate.pages, 1);
+  assert.equal(gate.pages, 0, 'the rejected page is excluded from the evidence');
   assert.equal(gate.passed, false);
+  assert.equal(gate.stopped, 'input_over_bound');
   assert.equal(JSON.parse(fs.readFileSync(res, 'utf8')).stopped, 'input_over_bound');
 });
 

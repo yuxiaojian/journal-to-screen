@@ -6,7 +6,12 @@ export class PromptCancelled extends Error {
   constructor() { super('cancelled'); this.name = 'PromptCancelled'; }
 }
 
-export function askHidden(label, { input = process.stdin, output = process.stdout, hide = true } = {}) {
+// Signals that end the process while a prompt is open. Each gets a handler ONLY while the prompt is active, so the default
+// behavior (terminate) is preserved afterwards and handlers can never accumulate across prompts.
+export const PROMPT_SIGNALS = ['SIGINT', 'SIGTERM', 'SIGHUP'];
+const SIGNAL_NUMBER = { SIGHUP: 1, SIGINT: 2, SIGTERM: 15 };
+
+export function askHidden(label, { input = process.stdin, output = process.stdout, hide = true, proc = process, onSignalExit = true } = {}) {
   return new Promise((resolve, reject) => {
     if (hide && !input.isTTY) return reject(new Error('tty_required')); // never read a secret from a pipe or file
     let buf = '';
@@ -17,16 +22,34 @@ export function askHidden(label, { input = process.stdin, output = process.stdou
       try { if (input.isTTY && input.isRaw !== wasRaw) input.setRawMode(wasRaw); } catch { /* stream already closed */ }
       try { input.pause(); } catch { /* ignore */ }
     };
+    // Restore the terminal FIRST, synchronously, then end the process the way the signal intended (128 + signal number).
+    // The restore is bounded: setRawMode and pause are synchronous and wrapped, so a failure cannot prevent the exit.
+    const signalHandlers = new Map();
+    const detachSignals = () => { for (const [sig, h] of signalHandlers) proc.off(sig, h); signalHandlers.clear(); };
     const finish = (fn, value) => {
       if (done) return;
       done = true;
       input.off('data', onData);
       input.off('end', onEnd);
       input.off('error', onErr);
-      process.off('exit', restore);
+      proc.off('exit', restore);
+      detachSignals();
       restore();
       output.write('\n');
       fn(value);
+    };
+    const onSignal = (sig) => () => {
+      if (done) return;
+      done = true;
+      input.off('data', onData);
+      input.off('end', onEnd);
+      input.off('error', onErr);
+      proc.off('exit', restore);
+      detachSignals();
+      restore();
+      try { output.write('\n'); } catch { /* output closed */ }
+      reject(new PromptCancelled());
+      if (onSignalExit) proc.exit(128 + SIGNAL_NUMBER[sig]);
     };
     const onEnd = () => finish(reject, new PromptCancelled());
     const onErr = () => finish(reject, new PromptCancelled());
@@ -43,7 +66,8 @@ export function askHidden(label, { input = process.stdin, output = process.stdou
         if (buf.length > 4096) return finish(reject, new Error('input_too_long'));
       }
     };
-    process.on('exit', restore);
+    proc.on('exit', restore);
+    for (const sig of PROMPT_SIGNALS) { const h = onSignal(sig); signalHandlers.set(sig, h); proc.on(sig, h); }
     output.write(label);
     try {
       if (input.isTTY) input.setRawMode(true);
