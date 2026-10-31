@@ -8,7 +8,7 @@
   },
   "scripts": {
     "start": "node src/server.js",
-    "test": "node --test test/*.test.js",
+    "test": "node --test --test-concurrency=1 test/*.test.js",
     "genvapid": "node scripts/genvapid.js",
     "seed:local": "node scripts/seed-local.js"
   },

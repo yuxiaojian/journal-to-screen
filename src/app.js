@@ -6,6 +6,7 @@ import { hashToken, newId, newToken, verifyPassword, ID_RE } from './security.js
 import { processImage, ImageError } from './images.js';
 import { validateEndpoint } from './push.js';
 import { dispatchSends } from './dispatch.js';
+import { evaluateCorrection, normalizeText, validText } from './journal.js';
 import { validateAppOrigin } from './config.js';
 
 const publicDir = path.join(path.dirname(fileURLToPath(import.meta.url)), '..', 'public');
@@ -57,7 +58,8 @@ function createThrottle() {
   };
 }
 
-export function createApp({ db, config, pushSender }) {
+export function createApp({ db, config, pushSender, jobs = null }) {
+  const aiOn = jobs?.active === true; // false by default: the POC push-at-upload behavior is unchanged
   const app = express();
   app.disable('x-powered-by');
   app.set('trust proxy', 1); // Heroku router
@@ -120,6 +122,8 @@ export function createApp({ db, config, pushSender }) {
     next();
   });
 
+  // Corrections carry up to MAX_TRANSCRIPT_CHARS of text; only that route gets the larger body limit.
+  app.use('/api/uploads/:id/correction', express.json({ limit: '96kb' }));
   app.use(express.json({ limit: '16kb' }));
 
   async function cleanup() {
@@ -250,6 +254,19 @@ export function createApp({ db, config, pushSender }) {
     const id = newId();
     const sendIds = [];
     const inserted = await db.tx(async (t) => {
+      if (aiOn) {
+        // Serialize uploads per family so the daily cap cannot be exceeded by concurrent requests.
+        await t.query('SELECT id FROM families WHERE id = $1 FOR UPDATE', [req.user.family_id]);
+        // Resolve a duplicate key INSIDE the lock and BEFORE the cap: a repeat of an accepted upload is not a new upload.
+        const dup = await t.query('SELECT id FROM uploads WHERE family_id = $1 AND idempotency_key = $2', [req.user.family_id, key]);
+        if (dup.rows[0]) return false;
+        const used = (await t.query(
+          `SELECT count(*)::int n FROM journal_analyses WHERE family_id = $1
+             AND created_at >= (date_trunc('day', now() AT TIME ZONE 'UTC') AT TIME ZONE 'UTC')`,
+          [req.user.family_id],
+        )).rows[0].n;
+        if (used >= config.ai.dailyUploadsPerFamily) throw new HttpError(429, 'daily_limit');
+      }
       const r = await t.query(
         `INSERT INTO uploads (id, family_id, uploader_id, idempotency_key, image, content_type, byte_size, expires_at)
          VALUES ($1,$2,$3,$4,$5,$6,$7, now() + ($8::int * interval '1 day'))
@@ -257,6 +274,11 @@ export function createApp({ db, config, pushSender }) {
         [id, req.user.family_id, req.user.id, key, img.data, img.contentType, img.data.length, config.retentionDays],
       );
       if (!r.rows[0]) return false;
+      if (aiOn) {
+        // Upload + queued analysis are one atomic unit. The single terminal notice is created when analysis finishes.
+        await t.query("INSERT INTO journal_analyses (id, upload_id, family_id, status) VALUES ($1,$2,$3,'queued')", [newId(), id, req.user.family_id]);
+        return true;
+      }
       const subs = await t.query(
         `SELECT sub.id FROM subscriptions sub JOIN users u ON u.id = sub.user_id
          WHERE u.family_id = $1 AND u.role IN ('parent1','parent2') AND sub.disabled_at IS NULL`,
@@ -273,6 +295,10 @@ export function createApp({ db, config, pushSender }) {
       const e = (await db.query('SELECT id FROM uploads WHERE family_id=$1 AND idempotency_key=$2', [req.user.family_id, key])).rows[0];
       return res.status(200).json({ id: e.id, duplicate: true, sends: await sendSummary(e.id) });
     }
+    if (aiOn) {
+      jobs.kick();
+      return res.status(201).json({ id, duplicate: false, state: 'processing', sends: [] });
+    }
     // Intents are committed; push is only a nudge. Failures never undo the upload.
     await dispatchSends({ db, pushSender, config, sendIds }).catch(() => {});
     res.status(201).json({ id, duplicate: false, sends: await sendSummary(id) });
@@ -283,12 +309,16 @@ export function createApp({ db, config, pushSender }) {
     // Deliberately excludes the image column.
     const rows = (await db.query(
       `SELECT up.id, up.created_at, up.byte_size,
+         ja.status AS analysis_status,
+         COALESCE(ja.corrected_suggested_minutes, ja.suggested_minutes) AS suggested_minutes,
          (SELECT count(*)::int FROM sends s WHERE s.upload_id = up.id AND s.status='accepted_by_push_service') AS accepted,
          (SELECT count(*)::int FROM sends s WHERE s.upload_id = up.id AND s.status IN ('pending','failed','unknown','sending')) AS needs_attention
-       FROM uploads up WHERE up.family_id = $1 AND up.expires_at > now() ORDER BY up.created_at DESC LIMIT 50`,
+       FROM uploads up LEFT JOIN journal_analyses ja ON ja.upload_id = up.id
+       WHERE up.family_id = $1 AND up.expires_at > now() ORDER BY up.created_at DESC LIMIT 50`,
       [req.user.family_id],
     )).rows;
-    res.json({ uploads: rows });
+    // The same "not being processed" signal as the detail view, so the inbox never says Reading while AI is off.
+    res.json({ uploads: rows.map((r) => ({ ...r, paused: !aiOn && (r.analysis_status === 'queued' || r.analysis_status === 'processing') })) });
   });
 
   async function loadOwned(req, res) {
@@ -309,10 +339,59 @@ export function createApp({ db, config, pushSender }) {
     return row;
   }
 
+  const CHILD_STATE = { queued: 'processing', processing: 'processing', ready: 'sent', needs_review: 'sent', failed: 'sent' };
+  const parseJson = (v) => { try { return v ? JSON.parse(v) : []; } catch { return []; } };
+
+  // Parents see transcript, count and suggestion. The uploader only ever sees a coarse status.
+  async function journalView(uploadId, role) {
+    const a = (await db.query('SELECT * FROM journal_analyses WHERE upload_id = $1', [uploadId])).rows[0];
+    if (!a) return null;
+    if (role === 'uploader') return { state: CHILD_STATE[a.status] };
+    const corrected = a.corrected_at != null;
+    return {
+      id: a.id, status: a.status, error: a.status === 'failed' ? a.error_code : null, attempts: a.attempts, version: a.version,
+      // Not being processed because AI is off or unusable: say so instead of claiming it is being read. Rows stay queued.
+      paused: !aiOn && (a.status === 'queued' || a.status === 'processing'),
+      original: a.transcript == null ? null : { transcript: a.transcript, wordCount: a.word_count, suggestedMinutes: a.suggested_minutes,
+        flags: parseJson(a.review_flags), pageIssues: parseJson(a.page_issues), illegibleCount: a.illegible_count },
+      corrected: corrected ? { transcript: a.corrected_transcript, wordCount: a.corrected_word_count,
+        suggestedMinutes: a.corrected_suggested_minutes, flags: parseJson(a.corrected_flags), at: a.corrected_at } : null,
+      provisional: a.status === 'needs_review' && !corrected,
+      tz: config.familyTz,
+    };
+  }
+
   app.get('/api/uploads/:id', auth, async (req, res) => {
     const row = await loadOwned(req, res);
     if (!row) return;
-    res.json({ upload: row, sends: await sendSummary(row.id) });
+    const journal = await journalView(row.id, req.user.role);
+    if (req.user.role === 'uploader') return res.json({ upload: { id: row.id, created_at: row.created_at }, journal });
+    res.json({ upload: row, journal, sends: await sendSummary(row.id) });
+  });
+
+  // Parent correction: preserves the original, recomputes server-side, optimistic version check, never extends expiry.
+  app.post('/api/uploads/:id/correction', auth, parent, async (req, res) => {
+    const row = await loadOwned(req, res);
+    if (!row) return;
+    const { transcript, version } = req.body || {};
+    if (!validText(transcript) || !Number.isSafeInteger(version) || version < 1 || version > 2_000_000_000) throw new HttpError(400, 'bad_request');
+    const text = normalizeText(transcript);
+    const ev = evaluateCorrection(text);
+    const r = await db.query(
+      `UPDATE journal_analyses a SET corrected_transcript = $3, corrected_word_count = $4, corrected_suggested_minutes = $5,
+         corrected_flags = $6, corrected_by = $7, corrected_at = now(), version = a.version + 1
+       WHERE a.upload_id = $1 AND a.family_id = $2 AND a.version = $8 AND a.status IN ('ready','needs_review')
+         AND EXISTS (SELECT 1 FROM uploads u WHERE u.id = a.upload_id AND u.expires_at > now())
+       RETURNING a.version`,
+      [row.id, req.user.family_id, text, ev.wordCount, ev.minutes, JSON.stringify(ev.flags), req.user.id, version],
+    );
+    if (!r.rows[0]) {
+      const cur = (await db.query('SELECT status, version FROM journal_analyses WHERE upload_id = $1 AND family_id = $2', [row.id, req.user.family_id])).rows[0];
+      if (!cur) throw new HttpError(404, 'not_found');
+      if (!['ready', 'needs_review'].includes(cur.status)) throw new HttpError(409, 'not_correctable');
+      throw new HttpError(409, 'version_conflict'); // someone else changed it first
+    }
+    res.json({ journal: await journalView(row.id, req.user.role) });
   });
 
   app.get('/api/uploads/:id/image', auth, parent, async (req, res) => {
@@ -347,6 +426,8 @@ export function createApp({ db, config, pushSender }) {
     if (err instanceof ImageError || err instanceof HttpError) {
       return res.status(err.status).json({ error: err.code });
     }
+    if (err?.type === 'entity.too.large') return res.status(413).json({ error: 'request_too_large' });
+    if (err?.type === 'entity.parse.failed' || err?.type === 'encoding.unsupported') return res.status(400).json({ error: 'bad_request' });
     console.error('request_error', { class: err?.name }); // no messages: may contain secrets
     res.status(500).json({ error: 'server_error' });
   });

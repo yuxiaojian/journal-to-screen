@@ -7,3 +7,6 @@ button.secondary{background:#6b7280}
 img{max-width:100%;border-radius:8px}
 .muted{color:#6b7280;font-size:.85rem}
 .err{color:#b91c1c}
+textarea{font:inherit;padding:8px;border-radius:8px;border:1px solid #d1d5db}
+pre{background:#fff;padding:8px;border-radius:8px}
+details{margin:10px 0}
