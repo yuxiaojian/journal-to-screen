@@ -20,8 +20,23 @@ export function loadConfig(env = process.env) {
       rawBytes: 10 * 1024 * 1024, // incoming multipart file cap
       pixels: 25_000_000, // decoded pixel cap, checked before decode
       storedBytes: 2 * 1024 * 1024, // cap on re-encoded image kept in DB
-      maxEdge: 1600,
+      maxEdge: 1568, // also the long edge sent to the model (visual-token bound)
     },
+    ai: {
+      enabled: env.AI_ENABLED === '1', // disabled by default; also needs a key and a priced model
+      apiKey: env.ANTHROPIC_API_KEY || null,
+      model: env.ANTHROPIC_MODEL || 'claude-haiku-5-5',
+      monthlyCapMicro: 5_000_000, // USD 5 per UTC calendar month, planning ceiling enforced by reservations
+      reserveFloorMicro: 0,
+      maxOutputTokens: 4096,
+      timeoutMs: 45_000,
+      leaseSeconds: 90,
+      maxAttempts: 2, // total per analysis, including manual retries
+      retryDelaySeconds: 20,
+      dailyUploadsPerFamily: 10,
+      sweepIntervalMs: 60_000,
+    },
+    familyTz: env.FAMILY_TZ || 'UTC', // display only
     retentionDays: 7,
     cleanupIntervalMs: 60_000,
     sessionDays: 30,
