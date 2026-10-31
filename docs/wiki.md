@@ -1,4 +1,4 @@
-# stm-relay wiki
+# journal-to-screen wiki
 
 Maintained by the project developer. Status 2026-10-30 (closure): **core POC achieved, with documented validation limits.** Deployed as Heroku release v7 (source `14a0e153955ad60ae0e27b8882eccdc554acf751`, one Heroku app owned by the deployment owner's Heroku team; one Basic web dyno + Essential-0 Postgres, about $12/month list). License: MIT (see `LICENSE`), added at publication; this file is an intentional publication delta and the application code is unchanged. Provenance: this wiki is the sanitized public export of the project wiki; commit hashes cited below refer to the original private development history, which is not published. Superseded status (earlier today): "code complete locally; not deployed, not pushed; real-device behavior untested".
 
