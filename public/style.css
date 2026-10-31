@@ -1,0 +1,9 @@
+body{font-family:system-ui,sans-serif;margin:0;background:#f3f4f6;color:#111}
+main{max-width:480px;margin:0 auto;padding:16px}
+button,input{font-size:1rem;padding:10px;margin:6px 0;width:100%;box-sizing:border-box}
+button{background:#1f2937;color:#fff;border:0;border-radius:8px}
+button.secondary{background:#6b7280}
+.card{background:#fff;border-radius:10px;padding:12px;margin:10px 0}
+img{max-width:100%;border-radius:8px}
+.muted{color:#6b7280;font-size:.85rem}
+.err{color:#b91c1c}
