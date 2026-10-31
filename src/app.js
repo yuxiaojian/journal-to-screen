@@ -257,6 +257,9 @@ export function createApp({ db, config, pushSender, jobs = null }) {
       if (aiOn) {
         // Serialize uploads per family so the daily cap cannot be exceeded by concurrent requests.
         await t.query('SELECT id FROM families WHERE id = $1 FOR UPDATE', [req.user.family_id]);
+        // Resolve a duplicate key INSIDE the lock and BEFORE the cap: a repeat of an accepted upload is not a new upload.
+        const dup = await t.query('SELECT id FROM uploads WHERE family_id = $1 AND idempotency_key = $2', [req.user.family_id, key]);
+        if (dup.rows[0]) return false;
         const used = (await t.query(
           `SELECT count(*)::int n FROM journal_analyses WHERE family_id = $1
              AND created_at >= (date_trunc('day', now() AT TIME ZONE 'UTC') AT TIME ZONE 'UTC')`,
@@ -314,7 +317,8 @@ export function createApp({ db, config, pushSender, jobs = null }) {
        WHERE up.family_id = $1 AND up.expires_at > now() ORDER BY up.created_at DESC LIMIT 50`,
       [req.user.family_id],
     )).rows;
-    res.json({ uploads: rows });
+    // The same "not being processed" signal as the detail view, so the inbox never says Reading while AI is off.
+    res.json({ uploads: rows.map((r) => ({ ...r, paused: !aiOn && (r.analysis_status === 'queued' || r.analysis_status === 'processing') })) });
   });
 
   async function loadOwned(req, res) {
@@ -346,7 +350,8 @@ export function createApp({ db, config, pushSender, jobs = null }) {
     const corrected = a.corrected_at != null;
     return {
       id: a.id, status: a.status, error: a.status === 'failed' ? a.error_code : null, attempts: a.attempts, version: a.version,
-      canRetry: a.status === 'failed' && a.attempts < config.ai.maxAttempts,
+      // Not being processed because AI is off or unusable: say so instead of claiming it is being read. Rows stay queued.
+      paused: !aiOn && (a.status === 'queued' || a.status === 'processing'),
       original: a.transcript == null ? null : { transcript: a.transcript, wordCount: a.word_count, suggestedMinutes: a.suggested_minutes,
         flags: parseJson(a.review_flags), pageIssues: parseJson(a.page_issues), illegibleCount: a.illegible_count },
       corrected: corrected ? { transcript: a.corrected_transcript, wordCount: a.corrected_word_count,
@@ -384,26 +389,8 @@ export function createApp({ db, config, pushSender, jobs = null }) {
       const cur = (await db.query('SELECT status, version FROM journal_analyses WHERE upload_id = $1 AND family_id = $2', [row.id, req.user.family_id])).rows[0];
       if (!cur) throw new HttpError(404, 'not_found');
       if (!['ready', 'needs_review'].includes(cur.status)) throw new HttpError(409, 'not_correctable');
-      throw new HttpError(409, 'version_conflict'); // someone else (or a retry) changed it first
+      throw new HttpError(409, 'version_conflict'); // someone else changed it first
     }
-    res.json({ journal: await journalView(row.id, req.user.role) });
-  });
-
-  // Manual retry of a failed analysis: only while total attempts (including automatic ones) remain.
-  app.post('/api/uploads/:id/retry', auth, parent, async (req, res) => {
-    const row = await loadOwned(req, res);
-    if (!row) return;
-    if (!aiOn) throw new HttpError(409, 'ai_disabled');
-    const r = await db.query(
-      `UPDATE journal_analyses a SET status = 'queued', run_after = now(), error_code = NULL, round = a.round + 1,
-         attempt_token = NULL, lease_until = NULL, completed_at = NULL, version = a.version + 1
-       WHERE a.upload_id = $1 AND a.family_id = $2 AND a.status = 'failed' AND a.attempts < $3
-         AND EXISTS (SELECT 1 FROM uploads u WHERE u.id = a.upload_id AND u.expires_at > now())
-       RETURNING a.id`,
-      [row.id, req.user.family_id, config.ai.maxAttempts],
-    );
-    if (!r.rows[0]) throw new HttpError(409, 'not_retryable');
-    jobs.kick();
     res.json({ journal: await journalView(row.id, req.user.role) });
   });
 

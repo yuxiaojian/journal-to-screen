@@ -90,7 +90,7 @@ async function shrink(file) {
 
 async function inboxView(me) {
   const r = await api('/api/uploads');
-  const rows = (r.body.uploads || []).map((u) => `<div class="card"><a href="/uploads/${u.id}" data-link>${esc(new Date(u.created_at).toLocaleString())}</a><div class="muted">${u.analysis_status ? esc(JOURNAL_STATUS[u.analysis_status] || u.analysis_status) + (u.suggested_minutes != null ? ` · suggested ${u.suggested_minutes} min` : '') : `${u.accepted} accepted by push service`}${u.needs_attention ? ` · ${u.needs_attention} notice(s) need attention` : ''}</div></div>`).join('') || '<p>No uploads yet.</p>';
+  const rows = (r.body.uploads || []).map((u) => `<div class="card"><a href="/uploads/${u.id}" data-link>${esc(new Date(u.created_at).toLocaleString())}</a><div class="muted">${u.analysis_status ? esc(u.paused ? 'Analysis paused; photo available' : (JOURNAL_STATUS[u.analysis_status] || u.analysis_status)) + (u.suggested_minutes != null ? ` · suggested ${u.suggested_minutes} min` : '') : `${u.accepted} accepted by push service`}${u.needs_attention ? ` · ${u.needs_attention} notice(s) need attention` : ''}</div></div>`).join('') || '<p>No uploads yet.</p>';
   $(`<h1>Inbox</h1><p class="muted">${esc(me.username)}</p><button id="en">Enable notifications</button><p id="ns" class="muted"></p>${rows}<button class="secondary" id="lo">Sign out</button>`);
   document.getElementById('lo').onclick = logout;
   document.getElementById('en').onclick = enablePush;
@@ -146,15 +146,17 @@ function journalPanel(id, j) {
   const flagList = (j.corrected ? j.corrected.flags : (j.original && j.original.flags)) || [];
   const flags = flagList.map((f) => `<li>${esc(FLAGS[f] || f)}</li>`).join('');
   const issues = j.original && j.original.pageIssues && j.original.pageIssues.length ? `<p class="muted">Page problems: ${esc(j.original.pageIssues.join(', '))}</p>` : '';
+  if (j.paused) {
+    box.innerHTML = '<p>Analysis paused; photo available.</p><p class="muted">The page will be read when analysis is turned back on. You can still decide from the photo.</p>';
+    return;
+  }
   if (j.status === 'queued' || j.status === 'processing') {
     box.innerHTML = '<p>Reading the page… this can take a minute. <button id="rf" class="secondary">Refresh</button></p>';
     document.getElementById('rf').onclick = async () => journalPanel(id, (await api('/api/uploads/' + id)).body.journal);
     return;
   }
   if (j.status === 'failed') {
-    box.innerHTML = `<p class="err">${esc(ERRORS[j.error] || 'The page could not be read.')} No time is suggested.</p>${j.canRetry ? '<button id="rt">Try reading again</button>' : '<p class="muted">No more attempts are available. You can still decide from the photo.</p>'}`;
-    const rt = document.getElementById('rt');
-    if (rt) rt.onclick = async () => { const x = await api(`/api/uploads/${id}/retry`, { method: 'POST', json: {} }); if (x.ok) journalPanel(id, x.body.journal); };
+    box.innerHTML = `<p class="err">${esc(ERRORS[j.error] || 'The page could not be read.')} No time is suggested.</p><p class="muted">You can still decide from the photo. To try again, upload the page again.</p>`;
     return;
   }
   box.innerHTML = `${j.provisional ? '<p class="err"><strong>Needs your review.</strong> This suggestion is provisional.</p>' : ''}

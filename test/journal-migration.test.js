@@ -26,14 +26,13 @@ test(`[${S}] upgrade path: migration 002 applies to a populated v7 schema, keeps
   await migrate(db); // applies only 002
   const names = (await db.query('SELECT name FROM schema_migrations ORDER BY name')).rows.map((r) => r.name);
   assert.deepEqual(names, ['001_init.sql', '002_journal.sql']);
-  // existing rows survive and get round 0
-  const sends = (await db.query('SELECT status, round FROM sends')).rows;
-  assert.deepEqual(sends, [{ status: 'accepted_by_push_service', round: 0 }]);
+  // existing rows survive untouched, and send uniqueness is still (upload, subscription) as deployed
+  const sends = (await db.query('SELECT status FROM sends')).rows;
+  assert.deepEqual(sends, [{ status: 'accepted_by_push_service' }]);
   assert.equal((await db.query('SELECT count(*)::int n FROM uploads')).rows[0].n, 1);
-  // the new unique key is (upload, subscription, round): a second round is allowed, a duplicate of a round is not
-  await db.query("INSERT INTO sends (id,upload_id,subscription_id,status,round) VALUES ($1,$2,$3,'pending',1)", [id(), u1, sub1]);
-  await assert.rejects(db.query("INSERT INTO sends (id,upload_id,subscription_id,status,round) VALUES ($1,$2,$3,'pending',1)", [id(), u1, sub1]));
-  await assert.rejects(db.query("INSERT INTO sends (id,upload_id,subscription_id,status,round) VALUES ($1,$2,$3,'pending',0)", [id(), u1, sub1]));
+  assert.equal((await db.query("SELECT count(*)::int n FROM information_schema.columns WHERE table_name = 'sends' AND column_name = 'round'")).rows[0].n, 0);
+  assert.equal((await db.query("SELECT count(*)::int n FROM information_schema.columns WHERE table_name = 'journal_analyses' AND column_name = 'round'")).rows[0].n, 0);
+  await assert.rejects(db.query("INSERT INTO sends (id,upload_id,subscription_id,status) VALUES ($1,$2,$3,'pending')", [id(), u1, sub1]));
   // new tables behave: attempts cap, status check, single job slot row, cascade from uploads
   await db.query("INSERT INTO journal_analyses (id,upload_id,family_id,status) VALUES ($1,$2,$3,'queued')", [id(), u1, fam]);
   await assert.rejects(db.query('UPDATE journal_analyses SET attempts = 3'));

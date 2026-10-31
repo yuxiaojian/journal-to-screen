@@ -5,7 +5,9 @@ import { monthKey } from '../src/jobs.js';
 
 const real = !!process.env.TEST_DATABASE_URL;
 const S = real ? 'PG' : 'pglite';
-const sendsFor = async (db, uploadId) => (await db.query('SELECT status, round FROM sends WHERE upload_id = $1 ORDER BY round, created_at', [uploadId])).rows;
+const sendsFor = async (db, uploadId) => (await db.query('SELECT status FROM sends WHERE upload_id = $1 ORDER BY created_at', [uploadId])).rows;
+// After an ambiguous outcome the slot is held until its lease expires; tests that want the next attempt simulate that expiry.
+const expireSlot = (db) => db.query("UPDATE job_slot SET lease_until = now() - interval '1 second'");
 
 test(`[${S}] AI disabled by default: no analysis row, POC behavior (immediate push) unchanged, provider never called`, async () => {
   const t = await makeJournalEnv({ real, aiEnabled: false });
@@ -16,7 +18,7 @@ test(`[${S}] AI disabled by default: no analysis row, POC behavior (immediate pu
   assert.equal((await t.db.query('SELECT count(*)::int n FROM journal_analyses')).rows[0].n, 0);
   assert.equal(await t.jobs.runOnce(), false);
   assert.equal(t.provider.calls.length, 0);
-  assert.equal((await t.p1.post(`/api/uploads/${r.body.id}/retry`).send({})).status, 409);
+  assert.equal((await t.p1.post(`/api/uploads/${r.body.id}/retry`).send({})).status, 404); // no retry route exists
 });
 
 test(`[${S}] missing key or unpriced model keeps the runner inert even when enabled`, async () => {
@@ -88,36 +90,42 @@ test(`[${S}] invalid / refused / truncated / partial model output is a failure, 
   assert.equal(t2.provider.calls.length, 1); // non-retryable: no second paid call
 });
 
-test(`[${S}] two total attempts: transient failure retries once automatically, then terminal failure with ONE notice`, async () => {
+test(`[${S}] two automatic attempts only: a transient failure retries once, then terminal failure with ONE notice and no further call`, async () => {
   const t = await makeJournalEnv({ real, provider: mockProvider([new ProviderError('timeout', { retryable: true }), new ProviderError('http_503', { retryable: true })]) });
   const r = await upload(t.up);
-  await t.jobs.drain();
+  await t.jobs.runOnce(); // attempt 1: ambiguous timeout, so the slot stays held through its lease
+  assert.equal((await rowOf(t.db, r.body.id)).status, 'queued');
+  assert.equal(await t.jobs.runOnce(), false); // nothing may start while the lease is held
+  await expireSlot(t.db);
+  await t.jobs.runOnce(); // attempt 2
   const a = await rowOf(t.db, r.body.id);
   assert.deepEqual([a.status, a.attempts, a.error_code], ['failed', 2, 'http_503']);
   assert.equal(t.provider.calls.length, 2);
   assert.equal(t.pushes.length, 2); // none after the first (temporary) failure; one pair after exhaustion
   assert.equal((await sendsFor(t.db, r.body.id)).length, 2);
-  assert.equal((await t.p1.get(`/api/uploads/${r.body.id}`)).body.journal.canRetry, false);
-  assert.equal((await t.p1.post(`/api/uploads/${r.body.id}/retry`).send({})).status, 409); // manual retries count toward the same two
+  const v = (await t.p1.get(`/api/uploads/${r.body.id}`)).body.journal;
+  assert.equal('canRetry' in v, false);
+  assert.equal((await t.p1.post(`/api/uploads/${r.body.id}/retry`).send({})).status, 404); // no post-terminal retry
+  await expireSlot(t.db);
   assert.equal(await t.jobs.runOnce(), false);
-  assert.equal(t.provider.calls.length, 2);
+  assert.equal(t.provider.calls.length, 2); // terminal means no more paid calls
 });
 
-test(`[${S}] manual retry shares the two-attempt cap: one failed attempt + one manual = done; a new round creates a new notice`, async () => {
-  const t = await makeJournalEnv({ real, provider: mockProvider([new ProviderError('refused'), okOut(120)]) });
+test(`[${S}] a known-final failure (refusal) makes exactly one call, notifies once, and cannot be retried`, async () => {
+  const t = await makeJournalEnv({ real, provider: mockProvider([new ProviderError('refused', { unknownOutcome: false }), okOut(120)]) });
   const r = await upload(t.up);
   await t.jobs.drain();
-  assert.equal((await rowOf(t.db, r.body.id)).status, 'failed'); // non-retryable refusal after 1 attempt
-  const v1 = (await t.p1.get(`/api/uploads/${r.body.id}`)).body.journal;
-  assert.equal(v1.canRetry, true); // attempts(1) < 2
-  const pushesBefore = t.pushes.length;
-  assert.equal((await t.p1.post(`/api/uploads/${r.body.id}/retry`).send({})).status, 200);
-  await t.jobs.drain();
   const a = await rowOf(t.db, r.body.id);
-  assert.deepEqual([a.status, a.attempts, a.round, a.suggested_minutes], ['ready', 2, 1, 60]);
-  assert.equal(t.pushes.length, pushesBefore + 2); // the recovery produced its own terminal notice (round 1), not lost behind round 0
-  assert.deepEqual((await sendsFor(t.db, r.body.id)).map((x) => x.round), [0, 0, 1, 1]);
-  assert.equal((await t.p1.post(`/api/uploads/${r.body.id}/retry`).send({})).status, 409);
+  assert.deepEqual([a.status, a.attempts, a.error_code], ['failed', 1, 'refused']);
+  assert.equal(t.provider.calls.length, 1);
+  assert.equal(t.pushes.length, 2);
+  assert.equal((await t.p1.post(`/api/uploads/${r.body.id}/retry`).send({})).status, 404);
+  await t.jobs.drain();
+  assert.equal(t.provider.calls.length, 1); // the scripted second answer was never consumed
+  assert.equal((await sendsFor(t.db, r.body.id)).length, 2);
+  const r2 = await upload(t.up); // a fresh upload is a fresh analysis
+  await t.jobs.drain();
+  assert.equal((await rowOf(t.db, r2.body.id)).status, 'ready');
 });
 
 test(`[${S}] reservation is atomic and precedes the call; it is never released, even on failure or timeout`, async () => {
@@ -134,7 +142,10 @@ test(`[${S}] reservation is atomic and precedes the call; it is never released, 
   assert.equal((await budget(t.db))[0].reserved_micro, reserve); // success does not refund
   const tf = await makeJournalEnv({ real, provider: mockProvider([new ProviderError('timeout', { retryable: true }), new ProviderError('timeout', { retryable: true })]) });
   await upload(tf.up);
-  await tf.jobs.drain();
+  await tf.jobs.runOnce();
+  assert.equal((await budget(tf.db))[0].reserved_micro, tf.jobs.check.reserveMicro);
+  await expireSlot(tf.db); // ambiguous outcome: the lease must lapse before the next attempt may start
+  await tf.jobs.runOnce();
   assert.equal((await budget(tf.db))[0].reserved_micro, 2 * tf.jobs.check.reserveMicro); // ambiguous outcomes stay charged
 });
 
@@ -163,6 +174,7 @@ test(`[${S}] month rollover: reservations stay attributed to their original UTC 
   await upload(t.up);
   await t.jobs.runOnce(); // attempt 1 in October, ambiguous (timeout)
   now = new Date('2026-11-01T00:00:30Z');
+  await expireSlot(t.db); // the ambiguous attempt's lease must lapse first
   await t.jobs.runOnce(); // attempt 2 in November
   const b = await budget(t.db);
   assert.deepEqual(b.map((x) => x.month), ['2026-10', '2026-11']);
@@ -288,4 +300,138 @@ test(`[${S}] the real kick-after-response path runs the job in the background wi
   for (let i = 0; i < 100 && (await rowOf(t.db, r.body.id)).status !== 'ready'; i++) await new Promise((x) => setTimeout(x, 20));
   assert.equal((await rowOf(t.db, r.body.id)).status, 'ready');
   assert.equal(t.pushes.length, 2);
+});
+
+// ---- reviewer P2 regressions + paused status (each fails on 6f3a935) ----
+
+test(`[${S}] P2-1: after an AMBIGUOUS outcome the slot stays held through its lease, so no second job can start a paid call`, async () => {
+  for (const err of [new ProviderError('timeout', { retryable: true }), new ProviderError('network', { retryable: true }), new ProviderError('http_503', { retryable: true })]) {
+    const t = await makeJournalEnv({ real, provider: mockProvider([err, okOut(60)]) });
+    await upload(t.up); await upload(t.up);
+    await t.jobs.runOnce(); // first upload: ambiguous failure
+    const slot = (await t.db.query('SELECT holder, lease_until FROM job_slot')).rows[0];
+    assert.ok(slot.holder && new Date(slot.lease_until) > new Date(), `slot must remain held after ${err.code}`);
+    assert.equal(await t.jobs.claimNext(), null); // the second upload cannot start yet
+    assert.equal(t.provider.calls.length, 1);
+    await expireSlot(t.db); // only the lease expiry frees it
+    assert.ok(await t.jobs.claimNext());
+  }
+});
+
+test(`[${S}] P2-1b: a KNOWN outcome (success, schema-invalid response, refusal, 4xx) releases the slot at once`, async () => {
+  const known = [okOut(60), { transcript: 'x' }, new ProviderError('refused', { unknownOutcome: false }), new ProviderError('http_400', { unknownOutcome: false })];
+  for (const first of known) {
+    const t = await makeJournalEnv({ real, provider: mockProvider([first, okOut(60)]) });
+    await upload(t.up); await upload(t.up);
+    await t.jobs.runOnce();
+    const slot = (await t.db.query('SELECT holder FROM job_slot')).rows[0];
+    assert.equal(slot.holder, null, JSON.stringify(first).slice(0, 40));
+  }
+});
+
+test(`[${S}] P2-2: the deadline covers the body read; a stalled or dropped body is an abort classified as retryable UNKNOWN, not a final bad_response`, async () => {
+  const { createAnthropicProvider } = await import('../src/ai.js');
+  const mk = (json) => createAnthropicProvider({ apiKey: 'k', model: 'claude-haiku-5-5', maxOutputTokens: 4096, timeoutMs: 60,
+    fetchImpl: async (u, init) => ({ status: 200, ok: true, json: () => json(init.signal) }) });
+  // headers arrive at once, the body never does; it only ends when the deadline aborts the request
+  const stalled = mk((signal) => new Promise((_, rej) => signal.addEventListener('abort', () => rej(Object.assign(new Error('aborted'), { name: 'AbortError' })))));
+  const t0 = Date.now();
+  await assert.rejects(stalled.analyze({ imageBase64: 'AA', mediaType: 'image/jpeg' }), (e) => e.code === 'timeout' && e.retryable && e.unknownOutcome);
+  assert.ok(Date.now() - t0 < 1000, 'must not outlive the configured deadline');
+  // connection dropped mid-body (a non-JSON, non-abort error): ambiguous, retryable
+  const dropped = mk(async () => { throw new TypeError('terminated'); });
+  await assert.rejects(dropped.analyze({ imageBase64: 'AA', mediaType: 'image/jpeg' }), (e) => e.code === 'network' && e.retryable && e.unknownOutcome);
+  // a complete but malformed body is a KNOWN, final outcome
+  const bad = mk(async () => { throw new SyntaxError('Unexpected token'); });
+  await assert.rejects(bad.analyze({ imageBase64: 'AA', mediaType: 'image/jpeg' }), (e) => e.code === 'bad_response' && !e.retryable && e.unknownOutcome === false);
+  // an error status does not keep reading its body past the deadline
+  let aborted = false;
+  const err500 = createAnthropicProvider({ apiKey: 'k', model: 'm', maxOutputTokens: 1, timeoutMs: 60,
+    fetchImpl: async (u, init) => { init.signal.addEventListener('abort', () => { aborted = true; }); return { status: 500, ok: false, json: () => new Promise(() => {}) }; } });
+  await assert.rejects(err500.analyze({ imageBase64: 'AA', mediaType: 'image/jpeg' }), (e) => e.code === 'http_500');
+  assert.equal(aborted, true);
+});
+
+test(`[${S}] P2-2b: end to end, a stalled body becomes a retryable unknown outcome: slot held, reservation kept, one more automatic attempt allowed`, async () => {
+  const { createAnthropicProvider } = await import('../src/ai.js');
+  const flaky = createAnthropicProvider({ apiKey: 'k', model: 'claude-haiku-5-5', maxOutputTokens: 4096, timeoutMs: 1000,
+    fetchImpl: async (u, init) => ({ status: 200, ok: true, json: () => new Promise((_, rej) => init.signal.addEventListener('abort', () => rej(Object.assign(new Error('x'), { name: 'AbortError' })))) }) });
+  const t = await makeJournalEnv({ real, provider: flaky }); // default validated config: 45 s timeout, 90 s lease
+  assert.equal(t.jobs.active, true);
+  t.config.ai.timeoutMs = 45_000; // (unchanged) the provider under test enforces its own 1 s deadline
+  const r = await upload(t.up);
+  const t0 = Date.now();
+  await t.jobs.runOnce();
+  assert.ok(Date.now() - t0 < 5000, 'the stalled body must end at the provider deadline, not hang');
+  const a = await rowOf(t.db, r.body.id);
+  assert.deepEqual([a.status, a.attempts, a.error_code], ['queued', 1, 'timeout']);
+  assert.ok((await t.db.query('SELECT holder FROM job_slot')).rows[0].holder);
+  assert.equal((await budget(t.db))[0].reserved_micro, t.jobs.check.reserveMicro);
+});
+
+test(`[${S}] P2-3: simultaneous same-key uploads at the daily cap give one 201 and one 200, one row, one analysis`, async () => {
+  const t = await makeJournalEnv({ real, mutate: (c) => { c.ai.dailyUploadsPerFamily = 1; } });
+  const { jpeg } = await import('./helpers.js');
+  const buf = await jpeg();
+  const post = () => t.up.post('/api/uploads').field('key', 'same-key-123456').attach('photo', buf, 'p.jpg');
+  const [a, b] = await Promise.all([post(), post()]);
+  assert.deepEqual([a.status, b.status].sort(), [200, 201]);
+  assert.equal(a.body.id, b.body.id);
+  assert.equal((await t.db.query('SELECT count(*)::int n FROM uploads')).rows[0].n, 1);
+  assert.equal((await t.db.query('SELECT count(*)::int n FROM journal_analyses')).rows[0].n, 1);
+  // a repeat after the cap is reached is still the same logical upload
+  const c = await post();
+  assert.equal(c.status, 200);
+  assert.equal(c.body.id, a.body.id);
+  // a genuinely new key is refused at the cap with no row
+  const d = await t.up.post('/api/uploads').field('key', 'other-key-123456').attach('photo', buf, 'p.jpg');
+  assert.equal(d.status, 429);
+  assert.equal((await t.db.query('SELECT count(*)::int n FROM uploads')).rows[0].n, 1);
+});
+
+test(`[${S}] paused: with AI off, queued/processing jobs read as paused in list and detail; nothing is spent or consumed; re-enabling processes the same row`, async () => {
+  const { createApp } = await import('../src/app.js');
+  const { createJobRunner } = await import('../src/jobs.js');
+  const { agent } = await import('./helpers.js');
+  const on = await makeJournalEnv({ real });
+  const r = await upload(on.up); // queued under an AI-on runner (not yet driven)
+  const id = r.body.id;
+  assert.equal((await rowOf(on.db, id)).status, 'queued');
+  assert.equal((await on.p1.get(`/api/uploads/${id}`)).body.journal.paused, false); // AI on: not paused
+  const mkApp = (cfgMutate, provider) => {
+    const config = { ...on.config, ai: { ...on.config.ai } };
+    cfgMutate(config);
+    const jobs = createJobRunner({ db: on.db, config, provider, pushSender: on.pushSender, log: { error() {} } });
+    return { config, jobs, app: createApp({ db: on.db, config, pushSender: on.pushSender, jobs }) };
+  };
+  const probe = async (app) => { const a = agent(app); await a.login(on.fam.name('parent1')); return a; };
+  // 1) AI disabled
+  const offA = mkApp((c) => { c.ai.enabled = false; }, on.provider);
+  const p1 = await probe(offA.app);
+  const detail = (await p1.get(`/api/uploads/${id}`)).body.journal;
+  assert.equal(detail.paused, true);
+  assert.equal(detail.status, 'queued');
+  assert.equal((await p1.get('/api/uploads')).body.uploads.find((x) => x.id === id).paused, true);
+  assert.equal(await offA.jobs.runOnce(), false);
+  // 2) unusable config (unpriced model) and 3) enabled but no provider/key also read as paused and never dispatch
+  const badA = mkApp((c) => { c.ai.model = 'unpriced-model'; }, on.provider);
+  assert.equal((await (await probe(badA.app)).get(`/api/uploads/${id}`)).body.journal.paused, true);
+  assert.equal(await badA.jobs.runOnce(), false);
+  const noKey = mkApp(() => {}, null);
+  assert.equal((await (await probe(noKey.app)).get(`/api/uploads/${id}`)).body.journal.paused, true);
+  assert.equal(await noKey.jobs.runOnce(), false);
+  // nothing was spent or consumed
+  assert.equal(on.provider.calls.length, 0);
+  const a = await rowOf(on.db, id);
+  assert.deepEqual([a.status, a.attempts], ['queued', 0]);
+  assert.equal((await budget(on.db)).length, 0);
+  assert.equal((await on.db.query('SELECT count(*)::int n FROM sends')).rows[0].n, 0);
+  // the child sees only a coarse status in every case
+  const upA = agent(offA.app); await upA.login(on.fam.name('uploader'));
+  assert.deepEqual((await upA.get(`/api/uploads/${id}`)).body.journal, { state: 'processing' });
+  // 4) re-enabled: the very same row is processed, then it is no longer paused
+  await on.jobs.drain();
+  const done = await rowOf(on.db, id);
+  assert.equal(done.status, 'ready');
+  assert.equal((await on.p1.get(`/api/uploads/${id}`)).body.journal.paused, false);
 });

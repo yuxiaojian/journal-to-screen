@@ -1,11 +1,10 @@
--- JRN-1: one analysis per upload; durable job slot; monthly AI budget reservations; notice rounds.
+-- JRN-1: one analysis per upload; durable job slot; monthly AI budget reservations.
 CREATE TABLE journal_analyses (
   id TEXT PRIMARY KEY,
   upload_id TEXT NOT NULL UNIQUE REFERENCES uploads(id) ON DELETE CASCADE,
   family_id TEXT NOT NULL REFERENCES families(id) ON DELETE CASCADE,
   status TEXT NOT NULL CHECK (status IN ('queued','processing','ready','needs_review','failed')),
-  attempts INTEGER NOT NULL DEFAULT 0 CHECK (attempts BETWEEN 0 AND 2), -- two total attempts, incl. manual retries
-  round INTEGER NOT NULL DEFAULT 0,                                     -- bumped by a manual retry; keys the terminal notice
+  attempts INTEGER NOT NULL DEFAULT 0 CHECK (attempts BETWEEN 0 AND 2), -- two automatic attempts in total; no post-terminal retry
   attempt_token TEXT,
   lease_until TIMESTAMPTZ,
   run_after TIMESTAMPTZ NOT NULL DEFAULT now(),
@@ -45,7 +44,3 @@ CREATE TABLE job_slot (
   lease_until TIMESTAMPTZ
 );
 INSERT INTO job_slot (id) VALUES (1);
-
-ALTER TABLE sends ADD COLUMN round INTEGER NOT NULL DEFAULT 0;
-ALTER TABLE sends DROP CONSTRAINT sends_upload_id_subscription_id_key;
-ALTER TABLE sends ADD CONSTRAINT sends_upload_sub_round_key UNIQUE (upload_id, subscription_id, round);

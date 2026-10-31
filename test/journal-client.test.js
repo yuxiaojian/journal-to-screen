@@ -19,7 +19,7 @@ test('client: model/parent text is only ever assigned via .value or .textContent
   assert.match(src, /esc\(ERRORS\[j\.error\]/);
 });
 
-test('client: the real journalPanel renders hostile text safely and drives save / conflict / retry', async () => {
+test('client: the real journalPanel renders hostile text safely and drives save / conflict / paused', async () => {
   // Extract and execute the real journalPanel + helpers against a tiny fake DOM.
   const grab = (name) => src.match(new RegExp(`(?:async )?function ${name}\\([\\s\\S]*?\\n}\\n`))[0];
   const consts = ['JOURNAL_STATUS', 'ERRORS', 'FLAGS'].map((n) => src.match(new RegExp(`const ${n} = \\{[^\\n]*\\};`))[0]).join('\n');
@@ -47,14 +47,19 @@ test('client: the real journalPanel renders hostile text safely and drives save 
   assert.deepEqual(calls[0], ['/api/uploads/abc/correction', { transcript: 'edited', version: 7 }]);
   assert.equal(calls[1][0], '/api/uploads/abc'); // reloaded the latest after the conflict
   assert.equal(els.tx.value, 'theirs');
-  // failed state: retry button only when allowed, and escaped error text
-  mod.journalPanel('abc', { status: 'failed', error: 'budget', canRetry: false });
+  // failed state: escaped error text, no retry control of any kind
+  mod.journalPanel('abc', { status: 'failed', error: 'budget' });
   assert.match(jv.innerHTML, /monthly reading allowance/);
-  assert.ok(!jv.innerHTML.includes('id="rt"'));
-  mod.journalPanel('abc', { status: 'failed', error: 'timeout', canRetry: true });
-  assert.ok(jv.innerHTML.includes('id="rt"'));
-  mod.journalPanel('abc', { status: 'failed', error: '<script>x</script>', canRetry: false });
+  assert.ok(!jv.innerHTML.includes('id="rt"') && !/Try reading again/.test(jv.innerHTML));
+  assert.match(jv.innerHTML, /upload the page again/);
+  mod.journalPanel('abc', { status: 'failed', error: '<script>x</script>' });
   assert.ok(!jv.innerHTML.includes('<script>'));
+  // paused: AI is off, so never say "Reading"
+  mod.journalPanel('abc', { status: 'queued', paused: true });
+  assert.match(jv.innerHTML, /Analysis paused; photo available/);
+  assert.ok(!/Reading the page/.test(jv.innerHTML));
+  mod.journalPanel('abc', { status: 'queued', paused: false });
+  assert.match(jv.innerHTML, /Reading the page/);
   // a corrected view shows the original separately
   mod.journalPanel('abc', { ...j, provisional: false, corrected: { transcript: 'fixed', wordCount: 1, suggestedMinutes: 0, flags: [] } });
   assert.equal(els.tx.value, 'fixed');

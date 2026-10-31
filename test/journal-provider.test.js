@@ -4,7 +4,7 @@ import { createAnthropicProvider, ProviderError, TOOL_NAME, SYSTEM_PROMPT, TOOL,
 import { loadConfig } from '../src/config.js';
 
 const KEY = 'sk-test-not-a-real-key';
-const resp = (status, body) => ({ status, ok: status >= 200 && status < 300, json: async () => { if (body === undefined) throw new Error('bad json'); return body; } });
+const resp = (status, body) => ({ status, ok: status >= 200 && status < 300, json: async () => { if (body === undefined) throw new SyntaxError('Unexpected token'); return body; } });
 const mk = (fetchImpl) => createAnthropicProvider({ apiKey: KEY, model: 'claude-haiku-5-5', maxOutputTokens: 4096, timeoutMs: 40, fetchImpl });
 const tool = (input) => ({ stop_reason: 'tool_use', content: [{ type: 'tool_use', id: 't1', name: TOOL_NAME, input }] });
 const img = { imageBase64: 'AAAA', mediaType: 'image/jpeg' };

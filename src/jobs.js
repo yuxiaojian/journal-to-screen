@@ -15,8 +15,8 @@ export const monthKey = (d) => d.toISOString().slice(0, 7); // UTC calendar mont
 const withTimeout = (p, ms) =>
   Promise.race([p, new Promise((_, rej) => setTimeout(() => rej(new ProviderError('timeout', { retryable: true })), ms))]);
 
-// Parents of the family with an active subscription get exactly one notice per (upload, round).
-export async function createNotice(t, { uploadId, familyId, round }) {
+// Parents of the family with an active subscription get exactly one notice per upload (unique upload+subscription).
+export async function createNotice(t, { uploadId, familyId }) {
   const subs = await t.query(
     `SELECT sub.id FROM subscriptions sub JOIN users u ON u.id = sub.user_id
      WHERE u.family_id = $1 AND u.role IN ('parent1','parent2') AND sub.disabled_at IS NULL`,
@@ -25,8 +25,8 @@ export async function createNotice(t, { uploadId, familyId, round }) {
   const ids = [];
   for (const s of subs.rows) {
     const r = await t.query(
-      "INSERT INTO sends (id, upload_id, subscription_id, round, status) VALUES ($1,$2,$3,$4,'pending') ON CONFLICT DO NOTHING RETURNING id",
-      [newId(), uploadId, s.id, round],
+      "INSERT INTO sends (id, upload_id, subscription_id, status) VALUES ($1,$2,$3,'pending') ON CONFLICT DO NOTHING RETURNING id",
+      [newId(), uploadId, s.id],
     );
     if (r.rows[0]) ids.push(r.rows[0].id);
   }
@@ -48,7 +48,7 @@ export function createJobRunner({ db, config, provider, pushSender, clock = () =
     const token = crypto.randomUUID();
     return db.tx(async (t) => {
       const cand = (await t.query(
-        `SELECT a.id, a.upload_id, a.family_id, a.round FROM journal_analyses a JOIN uploads u ON u.id = a.upload_id
+        `SELECT a.id, a.upload_id, a.family_id FROM journal_analyses a JOIN uploads u ON u.id = a.upload_id
          WHERE a.status = 'queued' AND a.run_after <= now() AND a.attempts < $1 AND u.expires_at > now()
          ORDER BY a.run_after, a.created_at LIMIT 1 FOR UPDATE OF a SKIP LOCKED`,
         [ai.maxAttempts],
@@ -74,7 +74,7 @@ export function createJobRunner({ db, config, provider, pushSender, clock = () =
              version = version + 1, completed_at = now() WHERE id = $1`,
           [cand.id],
         );
-        const sendIds = await createNotice(t, { uploadId: cand.upload_id, familyId: cand.family_id, round: cand.round });
+        const sendIds = await createNotice(t, { uploadId: cand.upload_id, familyId: cand.family_id });
         return { refused: true, sendIds };
       }
       await t.query(
@@ -82,7 +82,7 @@ export function createJobRunner({ db, config, provider, pushSender, clock = () =
            lease_until = now() + ($3::int * interval '1 second'), error_code = NULL, version = version + 1 WHERE id = $1`,
         [cand.id, token, ai.leaseSeconds],
       );
-      return { id: cand.id, uploadId: cand.upload_id, familyId: cand.family_id, round: cand.round, token };
+      return { id: cand.id, uploadId: cand.upload_id, familyId: cand.family_id, token };
     });
   }
 
@@ -99,7 +99,7 @@ export function createJobRunner({ db, config, provider, pushSender, clock = () =
              review_flags = $10, word_count = $11, suggested_minutes = $12, version = version + 1, completed_at = now()
            WHERE a.id = $1 AND a.attempt_token = $2 AND a.status = 'processing'
              AND EXISTS (SELECT 1 FROM uploads u WHERE u.id = a.upload_id AND u.expires_at > now())
-           RETURNING a.status, a.upload_id, a.family_id, a.round`,
+           RETURNING a.status, a.upload_id, a.family_id`,
           [job.id, job.token, outcome.status, ai.model, PROMPT_VERSION, COUNT_VERSION, outcome.transcript, outcome.illegible,
             JSON.stringify(outcome.pageIssues), JSON.stringify(outcome.flags), outcome.wordCount, outcome.minutes],
         )).rows[0];
@@ -112,16 +112,19 @@ export function createJobRunner({ db, config, provider, pushSender, clock = () =
              completed_at = CASE WHEN $3::boolean AND a.attempts < $4 THEN NULL ELSE now() END
            WHERE a.id = $1 AND a.attempt_token = $2 AND a.status = 'processing'
              AND EXISTS (SELECT 1 FROM uploads u WHERE u.id = a.upload_id AND u.expires_at > now())
-           RETURNING a.status, a.upload_id, a.family_id, a.round`,
+           RETURNING a.status, a.upload_id, a.family_id`,
           [job.id, job.token, outcome.retryable, ai.maxAttempts, ai.retryDelaySeconds, outcome.code],
         )).rows[0];
       }
       if (!row) return { stale: true, sendIds: [] };
       const terminal = row.status !== 'queued';
-      const sendIds = terminal ? await createNotice(t, { uploadId: row.upload_id, familyId: row.family_id, round: row.round }) : [];
+      const sendIds = terminal ? await createNotice(t, { uploadId: row.upload_id, familyId: row.family_id }) : [];
       return { stale: false, status: row.status, sendIds };
     });
-    await releaseSlot(job.token);
+    // Release the slot only when the provider outcome is KNOWN (success, or a failure that proves it never processed
+    // the request). After an ambiguous outcome (timeout, dropped connection, 429/5xx) the provider may still be working
+    // on it, so the slot stays held until its 90 s lease expires: no other job can start a second paid call meanwhile.
+    if (outcome.kind === 'success' || outcome.known) await releaseSlot(job.token);
     return res;
   }
 
@@ -142,7 +145,7 @@ export function createJobRunner({ db, config, provider, pushSender, clock = () =
     try {
       const img = await loadImage(job);
       if (!img) {
-        outcome = { kind: 'failure', retryable: false, code: 'expired' };
+        outcome = { kind: 'failure', retryable: false, code: 'expired', known: true }; // no call was made
       } else {
         const raw = await withTimeout(provider.analyze(img), ai.timeoutMs + 1000);
         const v = validateModelOutput(raw);
@@ -152,9 +155,9 @@ export function createJobRunner({ db, config, provider, pushSender, clock = () =
       }
     } catch (e) {
       if (e instanceof ProviderError) {
-        outcome = { kind: 'failure', retryable: e.retryable, code: e.code };
+        outcome = { kind: 'failure', retryable: e.retryable, code: e.code, known: e.unknownOutcome === false };
       } else if (typeof e?.message === 'string' && e.message.startsWith('schema:')) {
-        outcome = { kind: 'failure', retryable: true, code: 'invalid_output' };
+        outcome = { kind: 'failure', retryable: true, code: 'invalid_output', known: true }; // a complete response was received
       } else {
         outcome = { kind: 'failure', retryable: false, code: 'internal' };
       }
@@ -188,11 +191,11 @@ export function createJobRunner({ db, config, provider, pushSender, clock = () =
            completed_at = CASE WHEN a.attempts < $1 THEN NULL ELSE now() END
          WHERE a.status = 'processing' AND a.lease_until < now()
            AND EXISTS (SELECT 1 FROM uploads u WHERE u.id = a.upload_id AND u.expires_at > now())
-         RETURNING a.status, a.upload_id, a.family_id, a.round`,
+         RETURNING a.status, a.upload_id, a.family_id`,
         [ai.maxAttempts],
       )).rows;
       const ids = [];
-      for (const r of rows) if (r.status === 'failed') ids.push(...(await createNotice(t, { uploadId: r.upload_id, familyId: r.family_id, round: r.round })));
+      for (const r of rows) if (r.status === 'failed') ids.push(...(await createNotice(t, { uploadId: r.upload_id, familyId: r.family_id })));
       return ids;
     });
     await dispatch(sendIds);

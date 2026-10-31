@@ -41,7 +41,8 @@ export const TOOL = {
 };
 
 export class ProviderError extends Error {
-  // retryable: transient (timeout, network, 429, 5xx). unknownOutcome: the provider may have processed the request.
+  // retryable: transient (timeout, network, 429, 5xx). unknownOutcome: the provider may STILL be processing the request
+  // (true only for transport-level uncertainty). A complete response we cannot use, or a 4xx, is a KNOWN outcome.
   constructor(code, { retryable = false, unknownOutcome = true } = {}) {
     super(code);
     this.code = code;
@@ -74,42 +75,65 @@ export function validateAiConfig(ai) {
 
 export function createAnthropicProvider({ apiKey, model, maxOutputTokens, timeoutMs, fetchImpl = fetch }) {
   if (!apiKey) throw new Error('ANTHROPIC_API_KEY missing');
+
+  async function exchange({ imageBase64, mediaType, ctl }) {
+    let res;
+    try {
+      res = await fetchImpl('https://api.anthropic.com/v1/messages', {
+        method: 'POST',
+        signal: ctl.signal,
+        headers: { 'content-type': 'application/json', 'x-api-key': apiKey, 'anthropic-version': '2023-06-01' },
+        body: JSON.stringify({
+          model,
+          max_tokens: maxOutputTokens,
+          system: SYSTEM_PROMPT,
+          tools: [TOOL],
+          tool_choice: { type: 'tool', name: TOOL_NAME },
+          messages: [{ role: 'user', content: [
+            { type: 'image', source: { type: 'base64', media_type: mediaType, data: imageBase64 } },
+            { type: 'text', text: USER_TEXT },
+          ] }],
+        }),
+      });
+    } catch (e) {
+      throw new ProviderError(e?.name === 'AbortError' ? 'timeout' : 'network', { retryable: true });
+    }
+    if (res.status === 429 || res.status >= 500) {
+      ctl.abort(); // do not keep reading an error body past the deadline
+      throw new ProviderError(`http_${res.status}`, { retryable: true });
+    }
+    if (!res.ok) {
+      ctl.abort();
+      throw new ProviderError(`http_${res.status}`, { retryable: false, unknownOutcome: false });
+    }
+    let body;
+    try {
+      body = await res.json();
+    } catch (e) {
+      // Aborted by the deadline or the connection dropped mid-body: the request was accepted, so the outcome is unknown.
+      if (e?.name === 'AbortError' || ctl.signal.aborted) throw new ProviderError('timeout', { retryable: true });
+      if (e instanceof SyntaxError) throw new ProviderError('bad_response', { retryable: false, unknownOutcome: false });
+      throw new ProviderError('network', { retryable: true });
+    }
+    if (body?.stop_reason === 'max_tokens') throw new ProviderError('truncated', { retryable: false, unknownOutcome: false });
+    if (body?.stop_reason === 'refusal') throw new ProviderError('refused', { retryable: false, unknownOutcome: false });
+    const blocks = Array.isArray(body?.content) ? body.content.filter((b) => b?.type === 'tool_use') : [];
+    if (blocks.length !== 1 || blocks[0].name !== TOOL_NAME) throw new ProviderError('no_tool_call', { retryable: false, unknownOutcome: false });
+    return blocks[0].input; // unvalidated; the caller validates strictly
+  }
+
   return {
     async analyze({ imageBase64, mediaType }) {
+      // One deadline covers connect, headers, the whole body read and parsing; it is cleared only in `finally`.
+      // Anything after the request was sent (abort, dropped body) is an AMBIGUOUS outcome: retryable-unknown, and the
+      // reservation stays charged.
       const ctl = new AbortController();
       const timer = setTimeout(() => ctl.abort(), timeoutMs);
-      let res;
       try {
-        res = await fetchImpl('https://api.anthropic.com/v1/messages', {
-          method: 'POST',
-          signal: ctl.signal,
-          headers: { 'content-type': 'application/json', 'x-api-key': apiKey, 'anthropic-version': '2023-06-01' },
-          body: JSON.stringify({
-            model,
-            max_tokens: maxOutputTokens,
-            system: SYSTEM_PROMPT,
-            tools: [TOOL],
-            tool_choice: { type: 'tool', name: TOOL_NAME },
-            messages: [{ role: 'user', content: [
-              { type: 'image', source: { type: 'base64', media_type: mediaType, data: imageBase64 } },
-              { type: 'text', text: USER_TEXT },
-            ] }],
-          }),
-        });
-      } catch (e) {
+        return await exchange({ imageBase64, mediaType, ctl });
+      } finally {
         clearTimeout(timer);
-        throw new ProviderError(e?.name === 'AbortError' ? 'timeout' : 'network', { retryable: true });
       }
-      clearTimeout(timer);
-      if (res.status === 429 || res.status >= 500) throw new ProviderError(`http_${res.status}`, { retryable: true });
-      if (!res.ok) throw new ProviderError(`http_${res.status}`, { retryable: false, unknownOutcome: false });
-      let body;
-      try { body = await res.json(); } catch { throw new ProviderError('bad_response', { retryable: false }); }
-      if (body?.stop_reason === 'max_tokens') throw new ProviderError('truncated', { retryable: false });
-      if (body?.stop_reason === 'refusal') throw new ProviderError('refused', { retryable: false });
-      const blocks = Array.isArray(body?.content) ? body.content.filter((b) => b?.type === 'tool_use') : [];
-      if (blocks.length !== 1 || blocks[0].name !== TOOL_NAME) throw new ProviderError('no_tool_call', { retryable: false });
-      return blocks[0].input; // unvalidated; the caller validates strictly
     },
   };
 }
