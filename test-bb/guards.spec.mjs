@@ -119,4 +119,18 @@ test.describe('suite isolation guards', () => {
     const pkg = JSON.parse((await import('node:fs')).readFileSync(path.join(REPO, 'package.json'), 'utf8'));
     expect(pkg.scripts['test:all'].startsWith('node test-bb/harness/check-local-urls.mjs && ')).toBe(true);
   });
+
+  test('server ports come from per-worker blocks below the OS ephemeral range; overlap and exhaustion fail clearly', async () => {
+    const ports = await import('./harness/ports.mjs');
+    const r = ports.assertOutsideEphemeral(); // this machine
+    expect(r.blocks[1]).toBeLessThan(r.ephemeral.first);
+    const blocks = Array.from({ length: ports.MAX_WORKERS }, (_, i) => ports.workerBlock(i));
+    for (let i = 1; i < blocks.length; i += 1) expect(blocks[i].first).toBe(blocks[i - 1].last + 1); // contiguous, no overlap
+    expect(() => ports.workerBlock(ports.MAX_WORKERS)).toThrow(/worker index/);
+    expect(() => ports.assertOutsideEphemeral({ first: 20100, last: 30000, source: 'test' })).toThrow(/overlap the OS ephemeral range/);
+    const p = await ports.nextPort();
+    const mine = ports.workerBlock();
+    expect(p).toBeGreaterThanOrEqual(mine.first);
+    expect(p).toBeLessThanOrEqual(mine.last);
+  });
 });

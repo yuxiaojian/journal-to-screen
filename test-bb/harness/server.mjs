@@ -6,18 +6,15 @@ import fs from 'node:fs';
 import net from 'node:net';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
+import { nextPort, assertOutsideEphemeral } from './ports.mjs';
 
 const here = path.dirname(fileURLToPath(import.meta.url));
 export const REPO = path.resolve(here, '..', '..');
 const NET_FAKES = path.join(here, 'net-fakes.mjs');
+assertOutsideEphemeral(); // refuse to run if the port blocks overlap this machine's ephemeral range
 
-export async function freePort() {
-  return new Promise((resolve, reject) => {
-    const s = net.createServer();
-    s.once('error', reject);
-    s.listen(0, '127.0.0.1', () => { const { port } = s.address(); s.close(() => resolve(port)); });
-  });
-}
+// Ports for spawned servers come from this worker's block below the ephemeral range (see ports.mjs).
+export const freePort = nextPort;
 
 // opts: { dbUrl, fakeUrl, vapid, ai: boolean, https: { appOrigin } | undefined, extraEnv }
 export async function startServer(opts) {
