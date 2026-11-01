@@ -17,7 +17,10 @@ Family Link or Google-account integration. Nothing calls a model unless
 run, deploy and rollback guide, and [`.env.example`](.env.example) for
 configuration.
 
-**Quick start.** `npm ci`, then `npm test`. Create users with the private
+**Quick start.** `npm ci`, then `npm test`. The black-box integration suite
+(real server, real PostgreSQL 18 in Docker, headless Chromium, fake AI and push) runs with
+`npx playwright install chromium` once, then `npm run test:bb`; `npm run test:all` runs both,
+as CI does on every pull request. Create users with the private
 local helper `npm run seed:local` (hashes only are sent to the server).
 
 Licensed under the [MIT License](LICENSE).
