@@ -1,8 +1,7 @@
-import { createKeyHolder, fileIdOf } from './upload-key.js';
+import { createUploadFlow, friendlyError, canRetry, STATUS as UP } from './upload-flow.js';
 import { enablePush as enablePushFlow } from './push-enable.js';
-const keys = createKeyHolder();
 const app = document.getElementById('app');
-const $ = (h) => { app.replaceChildren(); app.insertAdjacentHTML('beforeend', h); return app; };
+const $ = (h, wide = false) => { app.className = wide ? 'wide' : ''; app.replaceChildren(); app.insertAdjacentHTML('beforeend', h); app.querySelector('h1')?.setAttribute('tabindex', '-1'); return app; };
 const esc = (s) => String(s).replace(/[&<>"']/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
 const api = async (path, opts = {}) => {
   const headers = { 'x-stm-request': '1', ...(opts.headers || {}) };
@@ -37,8 +36,14 @@ async function route() {
   return go(role === 'uploader' ? '/upload' : '/inbox');
 }
 
+const header = (who) => `<header class="bar"><span class="brand">Journal</span>${who ? `<span class="who">${esc(who)}</span><button type="button" class="link" id="lo">Sign out</button>` : ''}</header>`;
+const wireLogout = () => { const b = document.getElementById('lo'); if (b) b.onclick = logout; };
+
 function loginView(msg = '') {
-  $(`<h1>Sign in</h1><form id="f"><input name="username" autocomplete="username" placeholder="Username" required><input name="password" type="password" autocomplete="current-password" placeholder="Password" required><button>Sign in</button></form><p class="err">${esc(msg)}</p>`);
+  $(`${header()}<section class="card narrow"><h1>Sign in</h1><form id="f" novalidate>
+    <label for="un">Username</label><input id="un" name="username" autocomplete="username" placeholder="Username" required>
+    <label for="pw">Password</label><input id="pw" name="password" type="password" autocomplete="current-password" placeholder="Password" required>
+    <button class="primary" type="submit">Sign in</button></form><p class="err" role="alert">${esc(msg)}</p></section>`);
   document.getElementById('f').onsubmit = async (e) => {
     e.preventDefault();
     const fd = new FormData(e.target);
@@ -58,22 +63,68 @@ async function logout() {
   go('/login');
 }
 
-function uploadView(msg = '') {
-  $(`<h1>Upload</h1><form id="f"><input type="file" name="photo" accept="image/*" required><button>Upload photo</button></form><p>${esc(msg)}</p><button class="secondary" id="lo">Sign out</button>`);
-  document.getElementById('lo').onclick = logout;
-  document.getElementById('f').onsubmit = async (e) => {
-    e.preventDefault();
-    const file = e.target.photo.files[0];
+// ---- child: camera-first upload ----
+const flow = createUploadFlow({
+  prepare: async (file) => shrink(file),
+  send: async (blob, key) => {
     const fd = new FormData();
-    fd.append('key', keys.forFile(fileIdOf(file))); // kept across failures; reset on success or a new file
-    fd.append('photo', await shrink(file), 'photo.jpg');
-    const r = await api('/api/uploads', { method: 'POST', body: fd });
-    if (!r.ok) return uploadView('Upload failed: ' + (r.body.error || r.status));
-    keys.succeeded();
-    if (r.body.state === 'processing') return uploadView('Sent. Your parents will look at it soon.');
-    const s = (r.body.sends || []).map((x) => STATUS[x.status]).join('; ') || 'No parent devices subscribed yet';
-    uploadView(`Saved. ${r.body.duplicate ? '(already uploaded) ' : ''}Parents: ${s}`);
-  };
+    fd.append('key', key);
+    fd.append('photo', blob, 'photo.jpg');
+    return api('/api/uploads', { method: 'POST', body: fd });
+  },
+  onChange: () => renderUploadStatus(),
+});
+
+function uploadView() {
+  $(`${header('Uploader')}<section class="card narrow"><h1>Upload</h1>
+    <p class="muted">Take a clear photo of today's journal page. It is sent to your parents right away.</p>
+    <input id="cam" class="vh" type="file" accept="image/*" capture="environment" tabindex="-1" aria-hidden="true">
+    <input id="lib" class="vh" type="file" accept="image/*" tabindex="-1" aria-hidden="true">
+    <button type="button" class="primary" id="take">Take photo &amp; upload</button>
+    <button type="button" class="secondary" id="choose">Choose from library</button>
+    <div id="picked" class="picked" hidden><span id="pickedName"></span><button type="button" class="primary" id="send">Upload photo</button></div>
+    <div id="st" class="status" role="status" aria-live="polite"></div>
+    <div id="retryRow" class="row" hidden><button type="button" class="primary" id="retry">Try again</button><button type="button" class="secondary" id="change">Choose a different photo</button></div>
+  </section>`);
+  wireLogout();
+  const cam = document.getElementById('cam');
+  const lib = document.getElementById('lib');
+  // Each picker is opened directly from a tap. Its value is cleared first so the same photo can be chosen again.
+  document.getElementById('take').onclick = () => { if (!flow.busy()) { cam.value = ''; cam.click(); } };
+  document.getElementById('choose').onclick = () => { if (!flow.busy()) { lib.value = ''; lib.click(); } };
+  document.getElementById('change').onclick = () => { if (!flow.busy()) { lib.value = ''; lib.click(); } };
+  cam.onchange = () => { flow.select(cam.files && cam.files[0], 'camera'); cam.value = ''; };
+  lib.onchange = () => { flow.select(lib.files && lib.files[0], 'library'); lib.value = ''; };
+  document.getElementById('send').onclick = () => flow.upload();
+  document.getElementById('retry').onclick = () => flow.retry();
+  renderUploadStatus();
+}
+
+function renderUploadStatus() {
+  const st = document.getElementById('st');
+  if (!st) return; // not on the upload page; state is kept for when it is shown again
+  const s = flow.state;
+  const busy = flow.busy();
+  for (const id of ['take', 'choose', 'send', 'retry', 'change']) { const b = document.getElementById(id); if (b) b.disabled = busy; }
+  const picked = document.getElementById('picked');
+  picked.hidden = !(s.status === UP.SELECTED && s.source === 'library');
+  if (!picked.hidden) document.getElementById('pickedName').textContent = 'Photo selected.';
+  // One primary action at a time: after a failure, "Try again" is primary and "Take photo" steps back.
+  document.getElementById('take').className = s.status === UP.FAILED && canRetry(s.error) ? 'secondary' : 'primary';
+  const retryRow = document.getElementById('retryRow');
+  retryRow.hidden = s.status !== UP.FAILED;
+  if (s.status === UP.FAILED) document.getElementById('retry').hidden = !canRetry(s.error);
+  const chip = (cls, text) => `<span class="chip ${cls}">${esc(text)}</span>`;
+  const msg = {
+    [UP.IDLE]: '',
+    [UP.SELECTED]: s.source === 'library' ? 'Ready to upload.' : '',
+    [UP.PREPARING]: chip('busy', 'Preparing photo…'),
+    [UP.UPLOADING]: chip('busy', 'Uploading…'),
+    [UP.DONE]: `${chip('ok', 'Sent')} <span>Your parents will look at it soon.</span>`,
+    [UP.FAILED]: `${chip('bad', 'Not sent')} <span>${esc(friendlyError(s.error))}</span>`,
+  }[s.status];
+  st.innerHTML = msg;
+  st.setAttribute('aria-busy', String(busy));
 }
 
 // Resize on the phone; the server re-encodes anyway and is the real control.
@@ -88,11 +139,19 @@ async function shrink(file) {
   } catch { return file; }
 }
 
+const CHIP = { queued: 'busy', processing: 'busy', ready: 'ok', needs_review: 'warn', failed: 'bad' };
 async function inboxView(me) {
   const r = await api('/api/uploads');
-  const rows = (r.body.uploads || []).map((u) => `<div class="card"><a href="/uploads/${u.id}" data-link>${esc(new Date(u.created_at).toLocaleString())}</a><div class="muted">${u.analysis_status ? esc(u.paused ? 'Analysis paused; photo available' : (JOURNAL_STATUS[u.analysis_status] || u.analysis_status)) + (u.suggested_minutes != null ? ` · suggested ${u.suggested_minutes} min` : '') : `${u.accepted} accepted by push service`}${u.needs_attention ? ` · ${u.needs_attention} notice(s) need attention` : ''}</div></div>`).join('') || '<p>No uploads yet.</p>';
-  $(`<h1>Inbox</h1><p class="muted">${esc(me.username)}</p><button id="en">Enable notifications</button><p id="ns" class="muted"></p>${rows}<button class="secondary" id="lo">Sign out</button>`);
-  document.getElementById('lo').onclick = logout;
+  const rows = (r.body.uploads || []).map((u) => {
+    const status = u.analysis_status ? (u.paused ? 'Analysis paused; photo available' : (JOURNAL_STATUS[u.analysis_status] || u.analysis_status)) : `${u.accepted} accepted by push service`;
+    const cls = u.analysis_status ? (u.paused ? 'muted' : (CHIP[u.analysis_status] || 'muted')) : 'muted';
+    const mins = u.suggested_minutes != null ? `<span class="mins">suggested ${Number(u.suggested_minutes)} min</span>` : '';
+    const attn = u.needs_attention ? `<span class="muted">${Number(u.needs_attention)} notice(s) need attention</span>` : '';
+    return `<li><a class="item" href="/uploads/${u.id}" data-link><span class="when">${esc(new Date(u.created_at).toLocaleString())}</span><span class="chip ${cls}">${esc(status)}</span>${mins}${attn}</a></li>`;
+  }).join('');
+  $(`${header(me.username)}<section><div class="head"><h1>Inbox</h1><button type="button" class="secondary small" id="en">Enable notifications</button></div><p id="ns" class="muted" role="status"></p>
+    ${rows ? `<ul class="list">${rows}</ul>` : '<p class="card">No uploads yet.</p>'}</section>`, true);
+  wireLogout();
   document.getElementById('en').onclick = enablePush;
   document.querySelectorAll('[data-link]').forEach((a) => (a.onclick = (e) => { e.preventDefault(); go(a.getAttribute('href')); }));
 }
@@ -119,17 +178,21 @@ async function enablePush() {
 
 async function resultView(id, role) {
   const r = await api('/api/uploads/' + id);
-  if (!r.ok) return $('<h1>Not available</h1><p>This upload is unavailable or has expired.</p><a href="/" data-link>Back</a>');
+  if (!r.ok) return $(`${header()}<section class="card narrow"><h1>Not available</h1><p>This upload is unavailable or has expired.</p><a href="/" data-link>Back</a></section>`);
   const j = r.body.journal;
   if (role === 'uploader') {
     const msg = j && j.state === 'processing' ? 'Sent. Your parents will look at it soon.' : 'Sent to your parents.';
-    $(`<h1>Upload</h1><p>${esc(msg)}</p><a href="/" data-link>Back</a>`);
+    $(`${header('Uploader')}<section class="card narrow"><h1>Upload</h1><p>${esc(msg)}</p><a href="/" data-link>Back</a></section>`);
+    wireLogout();
     document.querySelectorAll('[data-link]').forEach((a) => (a.onclick = (e) => { e.preventDefault(); go('/'); }));
     return;
   }
-  const img = `<img alt="Uploaded photo" src="/api/uploads/${id}/image">`;
   const sends = (r.body.sends || []).map((s) => `<li>${esc(s.parent)}: ${esc(STATUS[s.status] || s.status)}</li>`).join('');
-  $(`<h1>Journal page</h1><p class="muted">${esc(new Date(r.body.upload.created_at).toLocaleString())}</p>${img}<div id="jv"></div><details><summary>Notifications</summary><ul>${sends}</ul><button id="rs" class="secondary">Resend notifications</button></details><p><a href="/" data-link>Inbox</a></p>`);
+  $(`${header('Parent')}<section><p><a href="/" data-link>← Inbox</a></p><div class="head"><h1>Journal page</h1><span class="muted">${esc(new Date(r.body.upload.created_at).toLocaleString())}</span></div>
+    <div class="split"><figure class="card photo"><a href="/api/uploads/${id}/image" target="_blank" rel="noopener"><img alt="Uploaded photo" src="/api/uploads/${id}/image"></a><figcaption class="muted">Open the photo full size to compare.</figcaption></figure>
+    <div class="card" id="jv"></div></div>
+    <details class="card"><summary>Notifications</summary><ul>${sends}</ul><button type="button" id="rs" class="secondary">Resend notifications</button></details></section>`, true);
+  wireLogout();
   document.querySelectorAll('[data-link]').forEach((a) => (a.onclick = (e) => { e.preventDefault(); go('/'); }));
   document.getElementById('rs').onclick = async () => {
     let x = await api(`/api/uploads/${id}/resend`, { method: 'POST', json: {} });
@@ -139,9 +202,10 @@ async function resultView(id, role) {
   journalPanel(id, j);
 }
 
-function journalPanel(id, j) {
+function journalPanel(id, j, notice = '') {
   const box = document.getElementById('jv');
-  if (!j) { box.textContent = ''; return; }
+  if (!j) { box.textContent = ''; box.hidden = true; return; }
+  box.hidden = false;
   const cur = j.corrected || j.original;
   const flagList = (j.corrected ? j.corrected.flags : (j.original && j.original.flags)) || [];
   const flags = flagList.map((f) => `<li>${esc(FLAGS[f] || f)}</li>`).join('');
@@ -151,7 +215,7 @@ function journalPanel(id, j) {
     return;
   }
   if (j.status === 'queued' || j.status === 'processing') {
-    box.innerHTML = '<p>Reading the page… this can take a minute. <button id="rf" class="secondary">Refresh</button></p>';
+    box.innerHTML = '<p>Reading the page… this can take a minute.</p><button type="button" id="rf" class="secondary">Refresh</button>';
     document.getElementById('rf').onclick = async () => journalPanel(id, (await api('/api/uploads/' + id)).body.journal);
     return;
   }
@@ -159,20 +223,28 @@ function journalPanel(id, j) {
     box.innerHTML = `<p class="err">${esc(ERRORS[j.error] || 'The page could not be read.')} No time is suggested.</p><p class="muted">You can still decide from the photo. To try again, upload the page again.</p>`;
     return;
   }
-  box.innerHTML = `${j.provisional ? '<p class="err"><strong>Needs your review.</strong> This suggestion is provisional.</p>' : ''}
-    <div class="card"><div><strong>${Number(cur.wordCount)} words</strong></div><div>Suggested: <strong>${Number(cur.suggestedMinutes)} min</strong>${j.corrected ? ' <span class="muted">(from your corrected text)</span>' : ''}</div>
-    <div class="muted">You decide the final time in Family Link.</div></div>${flags ? `<ul>${flags}</ul>` : ''}${issues}
-    <label for="tx"><strong>Text (edit to correct)</strong></label>
-    <textarea id="tx" rows="10" style="width:100%;box-sizing:border-box"></textarea>
-    <button id="sv">Save correction</button><p id="jm" class="muted"></p>
-    ${j.corrected ? '<details><summary>Original reading</summary><pre id="orig" style="white-space:pre-wrap"></pre></details>' : ''}`;
+  box.innerHTML = `${j.provisional ? '<p class="notice warn"><strong>Needs your review.</strong> This suggestion is provisional.</p>' : ''}
+    <div class="stats"><div><span class="big">${Number(cur.wordCount)} words</span></div><div>Suggested: <strong>${Number(cur.suggestedMinutes)} min</strong>${j.corrected ? ' <span class="muted">(from your corrected text)</span>' : ''}</div>
+    <div class="muted">You decide the final time in Family Link.</div></div>${flags ? `<ul class="flags">${flags}</ul>` : ''}${issues}
+    <label for="tx">Text (edit to correct)</label>
+    <textarea id="tx" rows="12"></textarea>
+    <button type="button" class="primary" id="sv">Save correction</button><p id="jm" class="notice" role="status" aria-live="polite" hidden></p>
+    ${j.corrected ? '<details><summary>Original reading</summary><pre id="orig"></pre></details>' : ''}`;
   document.getElementById('tx').value = cur.transcript; // set as text, never as HTML
   const orig = document.getElementById('orig'); if (orig) orig.textContent = j.original.transcript;
+  const jm = document.getElementById('jm');
+  const say = (text) => { jm.textContent = text; jm.hidden = !text; };
+  say(notice); // shown after the panel is rendered, so a re-render cannot wipe it
   document.getElementById('sv').onclick = async () => {
+    const sv = document.getElementById('sv');
+    sv.disabled = true;
     const x = await api(`/api/uploads/${id}/correction`, { method: 'POST', json: { transcript: document.getElementById('tx').value, version: j.version } });
-    if (x.status === 409) { document.getElementById('jm').textContent = 'Someone else changed this. Showing the latest text.'; const f = await api('/api/uploads/' + id); return journalPanel(id, f.body.journal); }
-    if (!x.ok) { document.getElementById('jm').textContent = 'Could not save.'; return; }
-    journalPanel(id, x.body.journal);
+    if (x.status === 409) {
+      const f = await api('/api/uploads/' + id);
+      return journalPanel(id, f.body.journal, 'Someone else changed this while you were editing. Your edit was not saved; the latest saved text is shown.');
+    }
+    if (!x.ok) { sv.disabled = false; say('Could not save. Please try again.'); return; }
+    journalPanel(id, x.body.journal, 'Saved.');
   };
 }
 

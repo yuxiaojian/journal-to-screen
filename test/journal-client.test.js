@@ -47,6 +47,9 @@ test('client: the real journalPanel renders hostile text safely and drives save 
   assert.deepEqual(calls[0], ['/api/uploads/abc/correction', { transcript: 'edited', version: 7 }]);
   assert.equal(calls[1][0], '/api/uploads/abc'); // reloaded the latest after the conflict
   assert.equal(els.tx.value, 'theirs');
+  // the conflict explanation is set after the re-render, so it is still there
+  assert.match(els.jm.textContent, /Someone else changed this/);
+  assert.equal(els.jm.hidden, false);
   // failed state: escaped error text, no retry control of any kind
   mod.journalPanel('abc', { status: 'failed', error: 'budget' });
   assert.match(jv.innerHTML, /monthly reading allowance/);
