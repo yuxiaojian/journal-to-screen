@@ -25,7 +25,7 @@ export function mockProvider(script = []) {
 }
 export const okOut = (n, extra = {}) => ({ transcript: words(n), illegible_count: 0, page_issues: [], ...extra });
 
-export async function makeJournalEnv({ real = false, provider = mockProvider(), aiEnabled = true, mutate, clock, autoKick = false } = {}) {
+export async function makeJournalEnv({ real = false, provider = mockProvider(), aiEnabled = true, mutate, clock, autoKick = false, pushDelayMs = 0 } = {}) {
   const config = loadConfig({ INSECURE_COOKIES: '1' });
   config.vapid = { publicKey: 'pub', privateKey: 'priv', subject: 'mailto:t@example.com' };
   config.ai.enabled = aiEnabled;
@@ -36,7 +36,12 @@ export async function makeJournalEnv({ real = false, provider = mockProvider(), 
   if (real) await db.exec('DROP SCHEMA public CASCADE; CREATE SCHEMA public;');
   await migrate(db);
   const pushes = [];
-  const pushSender = async (s, payload) => { pushes.push({ endpoint: s.endpoint, payload: JSON.parse(payload) }); return { statusCode: 201 }; };
+  // pushDelayMs models a slow push service (as on a loaded CI runner): the push is recorded only after the delay.
+  const pushSender = async (s, payload) => {
+    if (pushDelayMs) await new Promise((r) => setTimeout(r, pushDelayMs));
+    pushes.push({ endpoint: s.endpoint, payload: JSON.parse(payload) });
+    return { statusCode: 201 };
+  };
   const jobs = createJobRunner({ db, config, provider, pushSender, clock, log: { error() {} } });
   // Deterministic tests drive the runner by hand; the real kick-after-response path has its own test (autoKick: true).
   const driven = autoKick ? jobs : { ...jobs, kick() {} };
@@ -48,6 +53,17 @@ export async function makeJournalEnv({ real = false, provider = mockProvider(), 
   await p1.post('/api/subscriptions').send(sub('https://web.push.apple.com/p1'));
   await p2.post('/api/subscriptions').send(sub('https://fcm.googleapis.com/fcm/send/p2'));
   return { db, config, app, jobs, provider, pushes, fam, other, up, p1, p2, pushSender };
+}
+
+// Bounded wait for an observable condition. Resolves as soon as cond() is truthy; throws once the deadline passes,
+// so a condition that never becomes true still fails the test (the wait cannot turn a missing push into a pass).
+export async function waitUntil(cond, { timeoutMs = 2000, intervalMs = 20, what = 'condition' } = {}) {
+  const until = Date.now() + timeoutMs;
+  for (;;) {
+    if (await cond()) return;
+    if (Date.now() >= until) throw new Error(`timed out after ${timeoutMs} ms waiting for ${what}`);
+    await new Promise((r) => setTimeout(r, intervalMs));
+  }
 }
 
 export const upload = async (a, k = key()) => a.post('/api/uploads').field('key', k).attach('photo', await jpeg(), 'p.jpg');

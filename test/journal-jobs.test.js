@@ -1,6 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { makeJournalEnv, mockProvider, okOut, upload, rowOf, budget, words, ProviderError } from './journal-helpers.js';
+import { makeJournalEnv, mockProvider, okOut, upload, rowOf, budget, words, ProviderError, waitUntil } from './journal-helpers.js';
 import { monthKey } from '../src/jobs.js';
 
 const real = !!process.env.TEST_DATABASE_URL;
@@ -292,14 +292,39 @@ test(`[${S}] daily cap: more than the per-family daily uploads are rejected befo
   assert.equal((await t.db.query('SELECT count(*)::int n FROM journal_analyses')).rows[0].n, 2);
 });
 
-test(`[${S}] the real kick-after-response path runs the job in the background without blocking the 201`, async () => {
-  const t = await makeJournalEnv({ real, autoKick: true, provider: mockProvider([okOut(60)]) });
+// The terminal status is committed before the notice is dispatched, so "ready" alone does not mean the pushes have
+// been sent. Each observable condition gets its own bounded wait (2 s, as before); the exact count is still asserted.
+async function kickPathRunsInBackground(t) {
   const r = await upload(t.up);
   assert.equal(r.status, 201);
   assert.equal(r.body.state, 'processing');
-  for (let i = 0; i < 100 && (await rowOf(t.db, r.body.id)).status !== 'ready'; i++) await new Promise((x) => setTimeout(x, 20));
+  await waitUntil(async () => (await rowOf(t.db, r.body.id)).status === 'ready', { what: 'analysis ready' });
+  await waitUntil(() => t.pushes.length >= 2, { what: 'two terminal pushes' });
   assert.equal((await rowOf(t.db, r.body.id)).status, 'ready');
   assert.equal(t.pushes.length, 2);
+  assert.deepEqual(t.pushes.map((p) => p.payload.id), [r.body.id, r.body.id]);
+}
+
+test(`[${S}] the real kick-after-response path runs the job in the background without blocking the 201`, async () => {
+  await kickPathRunsInBackground(await makeJournalEnv({ real, autoKick: true, provider: mockProvider([okOut(60)]) }));
+});
+
+// Regression for the main-branch CI failure (run 41267117423): with a slow push service the status is "ready" well
+// before the pushes are recorded. The previous test asserted the push count right after "ready" and fails here.
+test(`[${S}] kick-after-response with a slow push service: waits for the pushes, still exactly two`, async () => {
+  await kickPathRunsInBackground(await makeJournalEnv({ real, autoKick: true, pushDelayMs: 300, provider: mockProvider([okOut(60)]) }));
+});
+
+test('waitUntil returns as soon as the condition holds and fails at its deadline when it never does', async () => {
+  let n = 0;
+  const t0 = Date.now();
+  await waitUntil(() => ++n >= 3, { timeoutMs: 2000, intervalMs: 5 });
+  assert.equal(n, 3);
+  assert.ok(Date.now() - t0 < 500);
+  const t1 = Date.now();
+  await assert.rejects(waitUntil(() => false, { timeoutMs: 200, intervalMs: 20, what: 'never' }), /timed out after 200 ms waiting for never/);
+  const waited = Date.now() - t1;
+  assert.ok(waited >= 200 && waited < 1000, `waited ${waited} ms`);
 });
 
 // ---- reviewer P2 regressions + paused status (each fails on 6f3a935) ----
