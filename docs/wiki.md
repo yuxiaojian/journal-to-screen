@@ -138,13 +138,13 @@ This section is the current statement. Earlier sections keep their dated history
 |---|---|
 | Relay POC (first release) | public PR #1, merged |
 | Journal MVP | public PR #2, merged to `main` as `d92891d6b44a961020051e654abb80dcea940a22`; runtime reviewed at `33ac0ed`, publication head `dc985ea` |
-| Reviewed tree | `379726f326908cbd47a643bc947512889b42ac90` (identical in the merge commit, the reviewed head and what is deployed) |
+| Reviewed tree | `379726f326908cbd47a643bc947512889b42ac90` (identical in public merge d92891d, publication head dc985ea and deployed source 2b8d63e; runtime-review commit 33ac0ed differs only by docs/status.md) |
 | Deployed source | deployment-only commit `2b8d63e9dd72e9aa270522922c89a7653847b5e6`, release v8, slug `f04853d7-93bf-4a3e-b510-f308dffdc149` |
 | Key configured | release v9 (set by the owner in the hosting dashboard; never read by the team) |
 | Analysis enabled | release v10 (set by the project lead), same slug |
 | Helper PR (optional, unmerged) | public PR #3, branch `task/journal-validation` at `2e46f81`, stacked on `task/journal-mvp`; not required at runtime |
 
-- **Why the deployed commit differs from the merge commit.** The hosting app's git history comes from the original private development history, and the public repository was published later as a clean export. The two histories share no commit, so the merge commit cannot fast-forward onto the app. The deployed commit has one parent (the previously deployed commit) and **exactly the reviewed tree**, so it fast-forwards. The two are linked by tree equality, and compare trees, not commit hashes. The deployment-only commit and the private history must never be pushed to the public repository. The public history is not rewritten.
+- **Why the deployed commit differs from the merge commit.** The hosting app's git history comes from the original private development history, and the public repository was published later as a clean export. The two histories share no commit, so the merge commit cannot fast-forward onto the app. The deployed commit has one parent (the previously deployed commit) and **exactly the reviewed tree**, so it fast-forwards. The two are linked by tree equality. Verify the exact approved deployment source SHA as well as its mapping to the reviewed public tree. The deployment-only commit and the private history must never be pushed to the public repository. The public history is not rewritten.
 - **Superseded:** the earlier local Family Link proof of concept (section 9) was stopped when the owner required cloud hosting; the manual Family Link baseline stands.
 
 ### 14.3 Evidence (each claim states who produced it)
@@ -161,16 +161,18 @@ This section is the current statement. Earlier sections keep their dated history
 - Real operating-system push delivery under offline, Focus, revoked-permission, second-parent and reinstall conditions is not covered by any test. Browser-level service-worker behavior can be tested but does not replace device checks.
 - Production failure and lease-recovery paths (timeouts, restarts, stale completions) have been exercised only in local tests.
 - The monthly USD 5 limit is an app-side conservative reservation ceiling, not a provider invoice cap; set a spending limit at the provider as an outside backstop.
-- After analysis is switched off, uploads made while it was on stay queued and show as paused; their notice arrives only after analysis is re-enabled, so parents should check the inbox. Re-enabling resumes queued work.
+- After analysis is switched off, unfinished analyses already queued or processing from an earlier enabled period show as paused; their notice arrives only after analysis is re-enabled, so parents should check the inbox. Re-enabling resumes queued work.
 - Migration SQL and its record are separate commits (see section 7). Rollback does not undo the additive schema or cancel accepted provider calls.
 - Photos, transcripts and derivatives expire seven days after the original upload (a correction never extends this). Provider-side retention is separate and is not shortened by that.
 - The login throttle is in memory and single-instance.
 
 ### 14.5 Working conventions recorded
 - **Roles for deployment:** the project lead executes deployments and production configuration changes personally. Explicit owner approval is required for merges, deployments and releases, new paid tests and model changes. Specialists prepare, review and verify read-only.
-- **Immutable freeze and additive commits:** once a head is handed to review it is frozen. Later changes are additive commits on top, never an amend, reset or rebase. If two messages cross and a head is replaced by mistake, restore the reviewed head and say so.
+- **Immutable freeze and additive commits:** once a head is handed to review it is frozen. Later changes are additive commits on top, never an amend, reset or rebase. If messages cross, stop writes and reconcile the immutable reviewed snapshot before any further mutation; do not reset or amend it.
 - **Evidence discipline:** state who produced each result (implementation, independent review or owner), never present a mock or a plan as a live result, and report a failed step plainly instead of working around it.
 - **Privacy in a public repository:** no journal text, photos, keys, personal addresses, internal team names, device models, absolute private paths or agent handles in any tracked file, commit message or pull request.
+
+**Final completion checkpoint:** the senior review signed off the bounded Phase 1 MVP on 2026-10-31 after the independent aggregate check matched the owner-verified run. Accuracy remains waived and unverified; known limits above remain.
 
 ### 14.6 Task state (2026-10-31)
 | Task | State |
@@ -180,9 +182,14 @@ This section is the current statement. Earlier sections keep their dated history
 | Validation helper (PR #3) | optional, unmerged, preserved |
 | Accuracy check | waived by the owner; not passed |
 | Closure documentation | this change |
-| Black-box regression tests with CI | assigned to the senior developer; not part of this change |
+| Black-box regression tests with CI | PR #4 published, independent local 33-test pass and first remote CI run green; final remote verification pending, not merged |
 
 ### 14.7 Superseded decisions (kept for history)
 - The manual terminal-recovery notification round and the retry route were removed before release (ADR-016, section 12).
 - The five-page accuracy check was a planned release gate (section 13) and is now waived.
 - A single local home-machine control proof of concept was replaced by cloud hosting.
+
+### 14.8 Wrap-up automation evidence
+PR #4 adds a separate real-server/PostgreSQL 18/Chromium black-box suite and GitHub Actions. Local independent review passed 33 scenarios with no failures, flaky results or skips; two isolation findings were fixed before publication. The first GitHub run (https://github.com/yuxiaojian/journal-to-screen/actions/runs/41266063231) succeeded on PR head 5ad1bba with merge ref 26455d9: 87 existing tests and 33 black-box scenarios, zero failures/skips, no artifacts. Remote evidence is implementation-reported pending independent verification. No production code or deployment changed. Real OS push delivery, iOS Home Screen behavior and OCR accuracy remain excluded.
+
+A browser regression exposed a known correction UX issue: the stale edit is rejected and latest text shown, but the explanatory conflict message is immediately cleared. Tests describe the behavior they actually assert; no production fix is included.

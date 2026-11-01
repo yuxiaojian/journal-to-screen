@@ -8,10 +8,10 @@ Phase 1 journal MVP is live with AI enabled. One English journal photo produces 
 ## Tasks and ownership
 | Task | Owner | State | Next action |
 |---|---|---|---|
-| JRN-1 | Implementation | Live; independent code/live checks and owner flow passed | Record final completion checkpoint and closure docs |
+| JRN-1 | Implementation | Complete; independent code/live checks, owner flow and final senior checkpoint passed | Closure docs publication |
 | JRN-VPREP | Implementation | Reviewed helper published as optional draft PR #3 | Preserve; no additional paid tests planned |
-| JRN-DOC | Documentation | Closure refresh assigned | Publish documentation/status PR from current main |
-| JRN-BB1 | Senior development | Black-box test plan requested | Plan and independent acceptance review before coding; include GitHub Actions |
+| JRN-DOC | Project lead | Final closure edits prepared | Narrow review, then publish documentation/status PR |
+| JRN-BB1 | Senior development | PR #4 published; first GitHub CI run passed | Independent remote verification, then owner merge decision |
 | JRN-QA | Independent review | Phase 1 aggregate QA passed | Review closure docs and new black-box tests |
 
 Named team assignments are tracked in the private project room. Project status content is maintained by the project lead separately from specialist wiki edits.
@@ -20,7 +20,7 @@ Named team assignments are tracked in the private project room. Project status c
 - Runtime PR #2 merged: https://github.com/yuxiaojian/journal-to-screen/pull/2 . Public main merge d92891d6b44a961020051e654abb80dcea940a22 has reviewed tree 379726f326908cbd47a643bc947512889b42ac90 (runtime reviewed at 33ac0ed; publication head dc985ea).
 - Current production: release v10, AI enabled. Deployment-only source 2b8d63e9dd72e9aa270522922c89a7653847b5e6 has the exact reviewed tree above; it preserves existing deployment ancestry and must never be pushed to public GitHub. Runtime deployed in v8; owner key setup v9; project lead enabled AI in v10. No public history rewrite.
 - Optional validation helper PR #3: https://github.com/yuxiaojian/journal-to-screen/pull/3 . Branch task/journal-validation at 2e46f81, stacked on preserved task/journal-mvp. Not merged and not required at runtime.
-- New documentation/test branch heads will be recorded after review. Preserve existing branches, private history and unrelated working changes.
+- Black-box tests PR #4: https://github.com/yuxiaojian/journal-to-screen/pull/4 , head 5ad1bba92b2b3d9e8cb4d9fa5d9f745eec99066b. CI run https://github.com/yuxiaojian/journal-to-screen/actions/runs/41266063231 succeeded on the PR merge ref; 87 unit and 33 black-box tests passed with zero failures or skips. Independent remote verification remains pending. Documentation branch task/phase1-closure-pm is based on reviewed closure commit 217f977; exact publication head is recorded in its PR. Preserve existing branches, private history and unrelated working changes.
 
 ## Verification evidence
 - Runtime: 87 automated tests independently passed on PGlite; implementation runs also passed on PostgreSQL 16 and 18.6. Populated 001-to-002 migration tested; original 37 relay tests passed with the new schema on old code.
@@ -38,6 +38,8 @@ Named team assignments are tracked in the private project room. Project status c
 - Migration SQL and its marker are not one transaction. If boot fails after SQL but before marker, inspect and stop; no blind rerun or manual production repair without approval. Rollback preserves additive schema and does not cancel already-accepted provider calls.
 
 ## Operations and next actions
-The project lead executes future deployments and production configuration changes personally. Explicit owner approval remains required for merge, deploy/release and new paid tests/model changes; no production change is included in the wrap-up work. Existing app stays running. Complete closure docs and black-box regression PRs, then pause further feature work. Optional helper PR stays separate; no branch deletion or history cleanup authorized.
+The project lead executes future deployments and production configuration changes personally. Explicit owner approval remains required for merge, deploy/release and new paid tests/model changes; no production change is included in the wrap-up work. Existing app stays running. Complete closure-doc publication and independent CI verification, then pause this wrap-up. Camera-first upload and a restrained professional visual refresh are recorded as the next requirements, with design before implementation. Optional helper PR stays separate; no branch deletion or history cleanup authorized.
 
-CI scope approved: GitHub Actions runs all black-box integration tests on pull requests and main pushes, plus manual dispatch. Isolated PostgreSQL/fake external services, no production secrets or paid calls. Require actual successful remote workflow run before JRN-BB1 completion; no repository permission or branch-protection changes authorized.
+CI configured in PR #4: GitHub Actions runs all black-box integration tests on pull requests and main pushes, plus manual dispatch. Isolated PostgreSQL/fake external services, no production secrets or paid calls. Require actual successful remote workflow run before JRN-BB1 completion; no repository permission or branch-protection changes authorized.
+
+Known UI finding: a stale parent correction is rejected and the latest text is preserved, but its conflict explanation is immediately cleared. The browser test verifies only the rejection/latest text; a separate fix has not been implemented.
