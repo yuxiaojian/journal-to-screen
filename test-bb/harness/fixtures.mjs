@@ -5,6 +5,7 @@ import crypto from 'node:crypto';
 import { test as base, expect } from '@playwright/test';
 import sharp from 'sharp';
 import { createDb, dropDb, withDb } from './pg.mjs';
+import { assertLoopbackPgUrl } from './local-url.mjs';
 import { startFakes } from './fakes.mjs';
 import { startServer } from './server.mjs';
 import { makeSubscriptionKeys, makeVapidKeys, decryptAes128gcm } from './webpush-decrypt.mjs';
@@ -41,6 +42,7 @@ export const test = base.extend({
   bb: async ({ playwright }, use) => {
     const adminUrl = process.env.BB_PG_URL;
     if (!adminUrl) throw new Error('BB_PG_URL is not set: run the suite with `npm run test:bb` or `npm run test:all`');
+    assertLoopbackPgUrl(adminUrl, 'BB_PG_URL');
     const db = await createDb(adminUrl);
     const fakes = await startFakes();
     const vapid = makeVapidKeys();

@@ -72,7 +72,7 @@ test.describe('browser flows', () => {
     expect([...kid.blocked, ...mom.blocked]).toEqual([]);
   });
 
-  test('a conflicting correction from the other parent shows the conflict message and the latest text', async ({ bb, browser }) => {
+  test('a stale correction is rejected and the other parent\'s latest text is shown', async ({ bb, browser }) => {
     const s = await bb.start({ ai: true });
     const u = await bb.seedFamily('a');
     bb.fakes.scriptAi({ transcript: W(70) });

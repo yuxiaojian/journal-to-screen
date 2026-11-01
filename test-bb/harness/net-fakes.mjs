@@ -11,6 +11,7 @@ import http from 'node:http';
 import https from 'node:https';
 import net from 'node:net';
 import tls from 'node:tls';
+import dgram from 'node:dgram';
 
 const FAKE = process.env.BB_FAKE_URL || '';
 const fakeUrl = (() => { try { return new URL(FAKE); } catch { return null; } })();
@@ -58,16 +59,42 @@ https.request = function patchedRequest(options, cb) {
 };
 https.get = function patchedGet(...args) { const r = https.request(...args); r.end(); return r; };
 
-// Raw sockets: allow loopback (Postgres, the fake server) only.
+// Raw sockets: allow loopback (Postgres, the fake server) and local socket paths only. Every TCP/TLS client
+// connection in Node, including `new net.Socket().connect(...)`, http/https agents and tls.connect, goes through
+// net.Socket.prototype.connect, so guarding it closes all of those entry points. The wrappers on net.connect /
+// net.createConnection / tls.connect are kept as an earlier, clearer failure.
+function hostOf(args) {
+  let a = args[0];
+  if (Array.isArray(a)) a = a[0]; // internal normalized form: [options, cb]
+  if (a !== null && typeof a === 'object') {
+    if (a.path) return { path: true };
+    return { host: a.host || a.hostname || 'localhost' };
+  }
+  if (typeof a === 'string' && !/^\d+$/.test(a)) return { path: true }; // connect(path)
+  return { host: typeof args[1] === 'string' ? args[1] : 'localhost' }; // connect(port, host)
+}
 const guardConnect = (orig, label) => function guarded(...args) {
-  const a = args[0];
-  const host = typeof a === 'object' && a !== null ? (a.host || a.hostname || 'localhost') : (typeof args[1] === 'string' ? args[1] : 'localhost');
-  const isPath = typeof a === 'object' && a !== null && a.path;
-  if (!isPath && !LOOPBACK.has(host)) throw blocked(`${label} ${host}`);
+  const t = hostOf(args);
+  if (!t.path && !LOOPBACK.has(t.host)) throw blocked(`${label} ${t.host}`);
   return orig.apply(this, args);
 };
+net.Socket.prototype.connect = guardConnect(net.Socket.prototype.connect, 'socket');
 net.connect = guardConnect(net.connect, 'net');
 net.createConnection = guardConnect(net.createConnection, 'net');
 tls.connect = guardConnect(tls.connect, 'tls');
+
+// UDP: only loopback destinations.
+const dgramGuard = (orig) => function guardedSend(...args) {
+  const host = args.find((x, i) => i > 0 && typeof x === 'string');
+  if (host && !LOOPBACK.has(host)) throw blocked(`udp ${host}`);
+  return orig.apply(this, args);
+};
+dgram.Socket.prototype.send = dgramGuard(dgram.Socket.prototype.send);
+dgram.Socket.prototype.connect = (function wrap(orig) {
+  return function guardedUdpConnect(port, host, ...rest) {
+    if (typeof host === 'string' && !LOOPBACK.has(host)) throw blocked(`udp ${host}`);
+    return orig.call(this, port, host, ...rest);
+  };
+}(dgram.Socket.prototype.connect));
 
 console.log('net-fakes: active (loopback only; AI and push redirected to fake)');

@@ -12,7 +12,7 @@
     "genvapid": "node scripts/genvapid.js",
     "seed:local": "node scripts/seed-local.js",
     "test:bb": "playwright test",
-    "test:all": "npm test && npm run test:bb"
+    "test:all": "node test-bb/harness/check-local-urls.mjs && npm test && npm run test:bb"
   },
   "dependencies": {
     "express": "^5.3.0",

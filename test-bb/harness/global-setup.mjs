@@ -3,11 +3,13 @@
 import fs from 'node:fs';
 import path from 'node:path';
 import { startDockerPg, stopDockerPg, serverVersion } from './pg.mjs';
+import { assertLoopbackPgUrl } from './local-url.mjs';
 
 const STATE = path.join(process.cwd(), 'test-results', '.bb-pg.json');
 
 export default async function globalSetup() {
   let url = process.env.BB_PG_URL;
+  if (url !== undefined) assertLoopbackPgUrl(url, 'BB_PG_URL'); // before any contact
   let container = null;
   if (!url) {
     const pg = await startDockerPg();

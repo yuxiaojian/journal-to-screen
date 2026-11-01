@@ -3,6 +3,7 @@
 import { execFileSync } from 'node:child_process';
 import crypto from 'node:crypto';
 import pg from 'pg';
+import { assertLoopbackPgUrl } from './local-url.mjs';
 
 export const PG_IMAGE = 'postgres:18';
 
@@ -11,6 +12,7 @@ function sh(cmd, args) {
 }
 
 async function waitReady(url, ms = 60_000) {
+  assertLoopbackPgUrl(url);
   const until = Date.now() + ms;
   let last;
   while (Date.now() < until) {
@@ -51,6 +53,7 @@ export function stopDockerPg(name) {
 const dbUrl = (adminUrl, db) => { const u = new URL(adminUrl); u.pathname = `/${db}`; return u.toString(); };
 
 export async function createDb(adminUrl) {
+  assertLoopbackPgUrl(adminUrl, 'BB_PG_URL');
   const db = `bb_${crypto.randomBytes(6).toString('hex')}`;
   const c = new pg.Client({ connectionString: adminUrl });
   await c.connect();
@@ -59,6 +62,7 @@ export async function createDb(adminUrl) {
 }
 
 export async function dropDb(adminUrl, name) {
+  assertLoopbackPgUrl(adminUrl, 'BB_PG_URL');
   const c = new pg.Client({ connectionString: adminUrl });
   await c.connect();
   try { await c.query(`DROP DATABASE IF EXISTS ${name} WITH (FORCE)`); } finally { await c.end(); }
@@ -66,11 +70,13 @@ export async function dropDb(adminUrl, name) {
 
 // Fixture-only SQL (setup/preconditions). Assertions never read the database.
 export async function withDb(url, fn) {
+  assertLoopbackPgUrl(url);
   const c = new pg.Client({ connectionString: url });
   await c.connect();
   try { return await fn(c); } finally { await c.end(); }
 }
 
 export async function serverVersion(url) {
+  assertLoopbackPgUrl(url, 'BB_PG_URL');
   return withDb(url, async (c) => (await c.query('SHOW server_version')).rows[0].server_version);
 }
