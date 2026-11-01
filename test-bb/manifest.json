@@ -1,0 +1,33 @@
+{
+  "tests": [
+    "auth and access › login sets a hardened session cookie; logout ends the session",
+    "auth and access › roles: uploader cannot use parent endpoints and parents cannot upload",
+    "auth and access › family isolation: another family sees nothing",
+    "auth and access › CSRF: mutations need the app header and a same-origin Origin",
+    "browser flows › child uploads a page; parent reviews, corrects and sees the original",
+    "browser flows › a conflicting correction from the other parent shows the conflict message and the latest text",
+    "browser flows › AI off: the parent sees the legacy relay view with no journal panel",
+    "browser flows › a page queued when AI is turned off shows as paused, then is read once AI is back",
+    "browser flows › service worker is served uncached and registers in the page scope",
+    "parent correction › correction recomputes count and suggestion and keeps the original",
+    "parent correction › concurrent corrections: the stale one gets 409 and changes nothing",
+    "parent correction › expired uploads are not viewable or correctable",
+    "parent correction › correction is refused while the page is still being read",
+    "production mode and startup config › plain http is redirected or refused; forwarded https is served with HSTS",
+    "production mode and startup config › startup fails closed on unsafe config; AI stays off without a key",
+    "AI on: journal reading › upload returns before analysis; one generic push only after the result exists",
+    "AI on: journal reading › suggestion tiers, boundaries and review flags",
+    "AI on: journal reading › unreadable words and page problems force review; a blank page is never a confident zero",
+    "AI on: journal reading › transcript is shown literally: misspellings kept, markup inert",
+    "AI off (legacy relay) › upload pushes immediately with a generic payload and creates no journal result",
+    "AI off (legacy relay) › a push service 410 disables that device; later uploads skip it",
+    "AI off (legacy relay) › a failed push leaves the upload available in the inbox",
+    "reliability › duplicates and the daily cap: same key in parallel is one upload; the 11th new page is refused",
+    "reliability › a provider 5xx is retried once and then succeeds",
+    "reliability › two invalid outputs end as failed with one push and no third call",
+    "reliability › a hanging provider is cut off by the deadline; two attempts at most",
+    "reliability › the monthly budget ceiling refuses before any AI call",
+    "reliability › a restart mid-reading recovers after the lease, with one result and one push",
+    "reliability › an upload that expires before it is read is never sent to the AI"
+  ]
+}
