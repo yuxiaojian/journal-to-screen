@@ -140,3 +140,63 @@ test('no inline styles in the app shell (the CSP would silently drop them)', () 
     assert.ok(!/<style/.test(src), `${f} contains a style element`);
   }
 });
+
+// ---- account boundary (review round 1, P1) ----
+test('reset clears the photo and key in every state, so nothing of the old account is left to upload', async () => {
+  for (const setup of ['selected', 'failed']) {
+    const h = harness(setup === 'failed' ? [{ ok: false, status: 0, body: { error: 'network' } }] : []);
+    if (setup === 'selected') h.flow.select(file('a.jpg'), 'library');
+    else await h.flow.select(file('a.jpg'), 'camera');
+    h.flow.reset();
+    assert.equal(h.flow.state.status, STATUS.IDLE, setup);
+    assert.equal(h.flow.state.file, null);
+    assert.equal(h.flow.state.key, null);
+    assert.equal(await h.flow.upload(), false);
+    assert.equal(await h.flow.retry(), false);
+    assert.equal(h.sends.length, setup === 'failed' ? 1 : 0);
+  }
+});
+
+test('reset while preparing: the prepared photo is never sent, and the late result does not touch the new state', async () => {
+  const sends = [];
+  let releasePrepare;
+  const flow = createUploadFlow({
+    prepare: () => new Promise((r) => { releasePrepare = () => r('prepared'); }),
+    send: async (...a) => { sends.push(a); return { ok: true, status: 201, body: {} }; },
+  });
+  const p = flow.select(file('a.jpg'), 'camera');
+  await new Promise((r) => setImmediate(r));
+  assert.equal(flow.state.status, STATUS.PREPARING);
+  flow.reset();
+  releasePrepare();
+  assert.equal(await p, false);
+  assert.equal(sends.length, 0);
+  assert.equal(flow.state.status, STATUS.IDLE);
+});
+
+test('reset while sending aborts the request and ignores its late answer; a new selection works normally', async () => {
+  let signal;
+  let answer;
+  const sends = [];
+  let n = 0;
+  const flow = createUploadFlow({
+    keyGen: () => `k${++n}`.padEnd(10, 'x'),
+    prepare: async (f) => f.name,
+    send: (body, key, s) => { sends.push(key); signal = s; return new Promise((r) => { answer = r; }); },
+  });
+  const p = flow.select(file('a.jpg'), 'camera');
+  await new Promise((r) => setImmediate(r));
+  assert.equal(flow.state.status, STATUS.UPLOADING);
+  flow.reset();
+  assert.equal(signal.aborted, true);
+  answer({ ok: true, status: 201, body: { id: 'old' } });
+  assert.equal(await p, false);
+  assert.equal(flow.state.status, STATUS.IDLE);
+  assert.equal(flow.state.result, null);
+  const q = flow.select(file('b.jpg'), 'camera');
+  await new Promise((r) => setImmediate(r));
+  answer({ ok: true, status: 201, body: { id: 'new' } });
+  assert.equal(await q, true);
+  assert.equal(flow.state.result.id, 'new');
+  assert.notEqual(sends[1], sends[0]);
+});

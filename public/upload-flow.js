@@ -7,6 +7,10 @@
 // - One attempt at a time, covering both preparing (resize) and sending. Actions while busy are ignored.
 // - Nothing is persisted: a reload starts over, by design.
 // - After a success the selection is cleared, so choosing the same photo again is a deliberate new upload.
+// - Account boundary: reset() (on sign-out or when the signed-in user changes) clears the photo and key, aborts an
+//   in-flight request, and bumps an epoch. Every step after an await checks the epoch, so work started for one
+//   account can never send, or update the page, after the account changed. A request already handed to the network
+//   before the reset may still complete at the server under the OLD session; it never starts under the new one.
 import { createKeyHolder } from './upload-key.js';
 
 export const STATUS = Object.freeze({ IDLE: 'idle', SELECTED: 'selected', PREPARING: 'preparing', UPLOADING: 'uploading', FAILED: 'failed', DONE: 'done' });
@@ -14,28 +18,39 @@ export const STATUS = Object.freeze({ IDLE: 'idle', SELECTED: 'selected', PREPAR
 export function createUploadFlow({ prepare, send, onChange = () => {}, keyGen } = {}) {
   const keys = createKeyHolder(keyGen);
   let seq = 0;
+  let epoch = 0;
+  let controller = null;
+  const EMPTY = { status: STATUS.IDLE, file: null, source: null, key: null, error: null, result: null };
   let state = { status: STATUS.IDLE, file: null, source: null, key: null, error: null, result: null };
   const set = (patch) => { state = { ...state, ...patch }; onChange(state); };
   const busy = () => state.status === STATUS.PREPARING || state.status === STATUS.UPLOADING;
 
   async function start() {
     if (busy() || !state.file) return false;
+    const mine = epoch;
+    const stale = () => mine !== epoch;
     const key = state.key;
     set({ status: STATUS.PREPARING, error: null });
     let body;
     try {
       body = await prepare(state.file);
     } catch {
+      if (stale()) return false;
       set({ status: STATUS.FAILED, error: 'prepare_failed' });
       return false;
     }
+    if (stale()) return false; // the account changed while preparing: never send
+    const ctl = new AbortController();
+    controller = ctl;
     set({ status: STATUS.UPLOADING });
     let r;
     try {
-      r = await send(body, key);
+      r = await send(body, key, ctl.signal);
     } catch {
       r = { ok: false, status: 0, body: { error: 'network' } };
     }
+    if (controller === ctl) controller = null;
+    if (stale()) return false; // a late answer for the previous account is ignored
     if (r.ok) {
       keys.succeeded();
       set({ status: STATUS.DONE, file: null, source: null, key: null, error: null, result: r.body });
@@ -48,6 +63,14 @@ export function createUploadFlow({ prepare, send, onChange = () => {}, keyGen } 
   return {
     get state() { return state; },
     busy,
+    // Account boundary: forget everything about the previous account's photo and stop its work.
+    reset() {
+      epoch += 1;
+      if (controller) { controller.abort(); controller = null; }
+      keys.succeeded();
+      state = { ...EMPTY };
+      onChange(state);
+    },
     // source: 'camera' starts at once; 'library' waits for an explicit upload.
     select(file, source) {
       if (busy()) return false; // single flight: ignore new selections while preparing or sending

@@ -68,3 +68,23 @@ test('client: the real journalPanel renders hostile text safely and drives save 
   assert.equal(els.tx.value, 'fixed');
   assert.equal(els.orig.textContent, evil);
 });
+
+test('client: a correction that fails on the network keeps the edit, re-enables Save and explains (no unhandled rejection)', async () => {
+  const grab = (name) => src.match(new RegExp(`(?:async )?function ${name}\\([\\s\\S]*?\\n}\\n`))[0];
+  const consts = ['JOURNAL_STATUS', 'ERRORS', 'FLAGS'].map((n) => src.match(new RegExp(`const ${n} = \\{[^\\n]*\\};`))[0]).join('\n');
+  const esc = src.match(/const esc = [^\n]*\n/)[0];
+  const els = {};
+  const make = (id) => (els[id] ??= { id, value: '', textContent: '', innerHTML: '', onclick: null, hidden: false, disabled: false });
+  const code = `${consts}\n${esc}\nconst api = async () => { throw new TypeError('Failed to fetch'); };\n${grab('journalPanel')}\nreturn { journalPanel };`;
+  const document = { getElementById: (id) => (id === 'jv' ? make('jv') : (els[id] && els[id].mounted ? els[id] : null)) };
+  const jv = make('jv');
+  Object.defineProperty(jv, 'innerHTML', { set(v) { this._html = v; for (const m of v.matchAll(/id="(\w+)"/g)) { make(m[1]).mounted = true; } }, get() { return this._html || ''; } });
+  const mod = new Function('document', code)(document);
+  mod.journalPanel('abc', { status: 'ready', version: 3, original: { transcript: 'orig', wordCount: 1, suggestedMinutes: 0, flags: [], pageIssues: [] }, corrected: null });
+  els.tx.value = 'my careful edit';
+  await els.sv.onclick(); // must not throw
+  assert.equal(els.tx.value, 'my careful edit');
+  assert.equal(els.sv.disabled, false);
+  assert.equal(els.jm.hidden, false);
+  assert.match(els.jm.textContent, /Couldn't save\. Check the connection/);
+});

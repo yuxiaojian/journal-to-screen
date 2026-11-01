@@ -1,5 +1,11 @@
 {
   "tests": [
+    "account boundary › a selected library photo is gone after another account signs in on the same page",
+    "account boundary › a failed photo cannot be retried by the next account",
+    "account boundary › a photo still being prepared when the account changes is never sent (no tap needed to trigger the leak before)",
+    "account boundary › an upload already sent by A may finish for A, but nothing is sent for B and B sees none of it",
+    "account boundary › after switching, B can upload their own photo normally, under B only",
+    "correction network failure › a correction lost on the network keeps the edit, re-enables Save and explains; a later save works",
     "auth and access › login sets a hardened session cookie; logout ends the session",
     "auth and access › roles: uploader cannot use parent endpoints and parents cannot upload",
     "auth and access › family isolation: another family sees nothing",

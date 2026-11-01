@@ -20,8 +20,16 @@ const ERRORS = { budget: 'The monthly reading allowance is used up.', invalid_ou
 const FLAGS = { illegible_marker: 'Some words could not be read ([?]).', page_issue: 'The page has a problem (see below).', empty_transcript: 'No text was found.', near_threshold: 'The count is close to a time-tier boundary, please check the text.' };
 const STATUS = { pending: 'Saved, not sent yet', sending: 'Sending', accepted_by_push_service: 'Accepted by push service (not confirmed delivered)', failed: 'Failed', unknown: 'Unknown (may or may not have been sent)', disabled_endpoint: 'Device unsubscribed' };
 
+// The upload flow belongs to one signed-in user. Any change of user (or signing out) resets it.
+let currentUser;
+function noteUser(username) {
+  if (currentUser !== undefined && currentUser !== username) flow.reset();
+  currentUser = username;
+}
+
 async function route() {
   const me = await api('/api/me');
+  noteUser(me.ok ? me.body.username : null);
   const path = location.pathname;
   if (!me.ok) {
     if (path !== '/login') return go('/login' + (path !== '/' ? '?next=' + encodeURIComponent(path) : ''));
@@ -59,6 +67,7 @@ async function logout() {
     const sub = await reg?.pushManager.getSubscription();
     if (sub) { await api('/api/subscriptions', { method: 'DELETE', json: { endpoint: sub.endpoint } }); await sub.unsubscribe(); }
   } catch { /* best effort; server also detaches by session on logout */ }
+  flow.reset(); // before the session ends, so nothing of this account's can be sent afterwards
   await api('/api/logout', { method: 'POST' });
   go('/login');
 }
@@ -66,11 +75,15 @@ async function logout() {
 // ---- child: camera-first upload ----
 const flow = createUploadFlow({
   prepare: async (file) => shrink(file),
-  send: async (blob, key) => {
+  send: async (blob, key, signal) => {
+    // Last check right before sending: the browser's session must still be the account that chose the photo
+    // (another tab may have signed in as someone else). If not, drop this photo instead of sending it.
+    const me = await api('/api/me', { signal });
+    if (!me.ok || me.body.username !== currentUser) { noteUser(me.ok ? me.body.username : null); throw new Error('account_changed'); }
     const fd = new FormData();
     fd.append('key', key);
     fd.append('photo', blob, 'photo.jpg');
-    return api('/api/uploads', { method: 'POST', body: fd });
+    return api('/api/uploads', { method: 'POST', body: fd, signal });
   },
   onChange: () => renderUploadStatus(),
 });
@@ -238,13 +251,19 @@ function journalPanel(id, j, notice = '') {
   document.getElementById('sv').onclick = async () => {
     const sv = document.getElementById('sv');
     sv.disabled = true;
-    const x = await api(`/api/uploads/${id}/correction`, { method: 'POST', json: { transcript: document.getElementById('tx').value, version: j.version } });
-    if (x.status === 409) {
-      const f = await api('/api/uploads/' + id);
-      return journalPanel(id, f.body.journal, 'Someone else changed this while you were editing. Your edit was not saved; the latest saved text is shown.');
+    try {
+      const x = await api(`/api/uploads/${id}/correction`, { method: 'POST', json: { transcript: document.getElementById('tx').value, version: j.version } });
+      if (x.status === 409) {
+        const f = await api('/api/uploads/' + id);
+        return journalPanel(id, f.body.journal, 'Someone else changed this while you were editing. Your edit was not saved; the latest saved text is shown.');
+      }
+      if (!x.ok) { say('Could not save. Please try again.'); return; }
+      journalPanel(id, x.body.journal, 'Saved.');
+    } catch {
+      say("Couldn't save. Check the connection, then try again. Your edit is still here."); // the edited text stays
+    } finally {
+      sv.disabled = false; // harmless if the panel was re-rendered and this button is gone
     }
-    if (!x.ok) { sv.disabled = false; say('Could not save. Please try again.'); return; }
-    journalPanel(id, x.body.journal, 'Saved.');
   };
 }
 
