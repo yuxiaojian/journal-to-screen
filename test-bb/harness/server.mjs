@@ -88,7 +88,7 @@ export async function startServer(opts) {
 
 // Boots a server that is expected to refuse to start (config validation). Returns { code, logs }.
 export async function startExpectingExit(opts) {
-  const env = { PATH: process.env.PATH, PORT: String(await freePort()), BB_FAKE_URL: opts.fakeUrl, ...opts.env };
+  const env = { PATH: process.env.PATH, PORT: String(opts.port || await freePort()), BB_FAKE_URL: opts.fakeUrl, ...opts.env };
   const child = spawn(process.execPath, ['--import', NET_FAKES, 'src/server.js'], { cwd: REPO, env, stdio: ['ignore', 'pipe', 'pipe'] });
   const logs = [];
   child.stdout.on('data', (d) => logs.push(d.toString()));

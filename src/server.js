@@ -37,7 +37,13 @@ if (config.ai.enabled) {
   }
 }
 const app = createApp({ db, config, pushSender, jobs });
-app.listen(config.port, () => {
+// Express 5 passes a bind failure (e.g. EADDRINUSE) to this same callback. Treat it as fatal: log only the error
+// code (no stack, env or config), exit non-zero, and never print the success line or start background jobs.
+app.listen(config.port, (err) => {
+  if (err) {
+    console.error(`listen failed: ${err.code || 'unknown_error'}`);
+    process.exit(1);
+  }
   console.log(`listening on ${config.port}; ai=${jobs?.active ? 'on' : 'off'}`);
   jobs?.start();
 });

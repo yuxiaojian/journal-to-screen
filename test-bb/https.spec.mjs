@@ -46,4 +46,32 @@ test.describe('production mode and startup config', () => {
     expect((await bb.upload(child)).body.state).toBeUndefined(); // legacy relay path, no analysis
     expect(bb.fakes.aiCalls).toHaveLength(0);
   });
+
+  test('an occupied port makes the server exit non-zero, with no "listening" line and no retry', async ({ bb }) => {
+    const net = await import('node:net');
+    const vapid = makeVapidKeys();
+    // Occupy a port on the wildcard address, as another process would.
+    const blocker = net.createServer();
+    await new Promise((r) => blocker.listen(0, '::', r));
+    const port = blocker.address().port;
+    try {
+      const t0 = Date.now();
+      const r = await startExpectingExit({
+        fakeUrl: bb.fakes.url, port,
+        env: { DATABASE_URL: bb.dbUrl, PGSSL: '0', VAPID_PUBLIC_KEY: vapid.publicKey, VAPID_PRIVATE_KEY: vapid.privateKey,
+          VAPID_SUBJECT: 'mailto:bb@example.invalid', INSECURE_COOKIES: '1', AI_ENABLED: '1', ANTHROPIC_API_KEY: 'bb-fake-key-not-a-secret' },
+      });
+      expect(r.code).toBe(1);
+      expect(Date.now() - t0).toBeLessThan(10_000); // exits promptly: no lingering DB pool or job timers
+      expect(r.logs).toContain('listen failed: EADDRINUSE');
+      expect(r.logs).not.toContain('listening on');
+      expect(r.logs).not.toContain('ai=on');
+      expect(r.logs).not.toContain('bb-fake-key-not-a-secret');
+      expect(r.logs).not.toMatch(/\n\s+at /); // no stack trace
+      expect(r.logs.match(/listen failed/g)).toHaveLength(1); // one attempt, no retry
+      expect(bb.fakes.aiCalls).toHaveLength(0);
+    } finally {
+      blocker.close();
+    }
+  });
 });
