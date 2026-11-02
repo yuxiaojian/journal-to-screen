@@ -1,22 +1,20 @@
 // Spawns the REAL production entry point (`node src/server.js`) as a child process with a clean, explicit environment.
 // The only addition is `--import net-fakes.mjs`, which redirects AI/push traffic to the local fakes and blocks all
 // other egress. Nothing from src/ is imported by the test process.
-import { spawn } from 'node:child_process';
+import { spawn, execFileSync } from 'node:child_process';
+import fs from 'node:fs';
 import net from 'node:net';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
+import { nextPort, assertOutsideEphemeral } from './ports.mjs';
 
 const here = path.dirname(fileURLToPath(import.meta.url));
 export const REPO = path.resolve(here, '..', '..');
 const NET_FAKES = path.join(here, 'net-fakes.mjs');
+assertOutsideEphemeral(); // refuse to run if the port blocks overlap this machine's ephemeral range
 
-export async function freePort() {
-  return new Promise((resolve, reject) => {
-    const s = net.createServer();
-    s.once('error', reject);
-    s.listen(0, '127.0.0.1', () => { const { port } = s.address(); s.close(() => resolve(port)); });
-  });
-}
+// Ports for spawned servers come from this worker's block below the ephemeral range (see ports.mjs).
+export const freePort = nextPort;
 
 // opts: { dbUrl, fakeUrl, vapid, ai: boolean, https: { appOrigin } | undefined, extraEnv }
 export async function startServer(opts) {
@@ -51,6 +49,30 @@ export async function startServer(opts) {
     exited.then(({ code }) => { clearTimeout(t); reject(new Error(`server exited (${code}) before listening:\n${logs.join('\n')}`)); });
   });
 
+  // DIAGNOSTIC ONLY (review round 1): probe the advertised address once, right after the listen line. On a refusal,
+  // record who holds the port while the child is still alive, then fail. No retry, no change to allocation or timing.
+  const probeAt = new Date().toISOString();
+  const refused = await new Promise((resolve) => {
+    const sock = net.connect({ host: '127.0.0.1', port }, () => { sock.destroy(); resolve(null); });
+    sock.on('error', (e) => resolve(e.code || String(e)));
+  });
+  if (refused) {
+    const sh = (cmd, args) => { try { return execFileSync(cmd, args, { encoding: 'utf8', stdio: ['ignore', 'pipe', 'pipe'] }); } catch (e) { return `(exit ${e.status}) ${e.stdout || ''}${e.stderr || ''}`; } };
+    const report = {
+      probeAt, port, error: refused, childPid: child.pid, childExitCode: child.exitCode, childSignal: child.signalCode,
+      listenLine: logs.find((l) => l.startsWith('listening on ')), logs,
+      lsofPort: sh('lsof', ['-nP', `-iTCP:${port}`]),
+      lsofChild: sh('lsof', ['-nP', '-a', '-p', String(child.pid), '-iTCP']),
+      netstatPort: sh('sh', ['-c', `netstat -anv -p tcp | grep -E '[.:]${port} ' || true`]),
+    };
+    const dir = process.env.BB_DIAG_DIR || 'test-results';
+    fs.mkdirSync(dir, { recursive: true });
+    const file = `${dir}/bb-refused-${port}-${Date.now()}.json`;
+    fs.writeFileSync(file, JSON.stringify(report, null, 2));
+    child.kill('SIGKILL');
+    throw new Error(`BB_DIAG: 127.0.0.1:${port} refused (${refused}) right after "listening"; diagnostics in ${file}`);
+  }
+
   return {
     port,
     base: `http://127.0.0.1:${port}`,
@@ -63,7 +85,7 @@ export async function startServer(opts) {
 
 // Boots a server that is expected to refuse to start (config validation). Returns { code, logs }.
 export async function startExpectingExit(opts) {
-  const env = { PATH: process.env.PATH, PORT: String(await freePort()), BB_FAKE_URL: opts.fakeUrl, ...opts.env };
+  const env = { PATH: process.env.PATH, PORT: String(opts.port || await freePort()), BB_FAKE_URL: opts.fakeUrl, ...opts.env };
   const child = spawn(process.execPath, ['--import', NET_FAKES, 'src/server.js'], { cwd: REPO, env, stdio: ['ignore', 'pipe', 'pipe'] });
   const logs = [];
   child.stdout.on('data', (d) => logs.push(d.toString()));

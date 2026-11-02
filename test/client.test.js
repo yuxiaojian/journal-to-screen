@@ -18,10 +18,11 @@ test('idempotency key is kept across failed retries, reset on success or new fil
   assert.notEqual(h.forFile(f2), k2); // after success -> new key
 });
 
-test('upload view wires the key holder (no per-render key)', () => {
+test('upload view uses the shared upload flow (state lives outside the view)', () => {
   const src = fs.readFileSync(new URL('../public/app.js', import.meta.url), 'utf8');
-  assert.match(src, /keys\.forFile\(/);
-  assert.match(src, /keys\.succeeded\(\)/);
+  assert.match(src, /createUploadFlow\(/);
+  assert.match(src, /flow\.select\(/);
+  assert.match(src, /flow\.retry\(\)/);
   assert.ok(!/crypto\.randomUUID\(\)\.replace/.test(src), 'key must not be generated inside the view');
 });
 

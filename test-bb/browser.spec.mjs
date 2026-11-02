@@ -25,10 +25,11 @@ test.describe('browser flows', () => {
       await signIn(kp, s.base, u.uploader);
       await expect(kp.getByRole('heading', { name: 'Upload' })).toBeVisible();
     });
-    await test.step('When the child uploads a photo, they are told it was sent', async () => {
-      await kp.locator('input[type=file]').setInputFiles({ name: 'page.png', mimeType: 'image/png', buffer: img });
-      await kp.getByRole('button', { name: 'Upload photo' }).click();
-      await expect(kp.getByText('Sent. Your parents will look at it soon.')).toBeVisible();
+    await test.step('When the child takes a photo, it uploads and they are told it was sent', async () => {
+      const [chooser] = await Promise.all([kp.waitForEvent('filechooser'), kp.getByRole('button', { name: 'Take photo & upload' }).click()]);
+      await chooser.setFiles({ name: 'page.png', mimeType: 'image/png', buffer: img });
+      await expect(kp.getByRole('status')).toContainText('Sent');
+      await expect(kp.getByText('Your parents will look at it soon.')).toBeVisible();
     });
 
     const mom = await guardedBrowserContext(browser);
@@ -72,7 +73,7 @@ test.describe('browser flows', () => {
     expect([...kid.blocked, ...mom.blocked]).toEqual([]);
   });
 
-  test('a stale correction is rejected and the other parent\'s latest text is shown', async ({ bb, browser }) => {
+  test('a stale correction is rejected, the latest text is shown and the parent is told why', async ({ bb, browser }) => {
     const s = await bb.start({ ai: true });
     const u = await bb.seedFamily('a');
     bb.fakes.scriptAi({ transcript: W(70) });
@@ -91,9 +92,8 @@ test.describe('browser flows', () => {
     expect((await dad.post(`/api/uploads/${up.body.id}/correction`, { data: { transcript: W(130), version: v } })).status()).toBe(200);
     await mp.locator('#tx').fill(W(90));
     await mp.getByRole('button', { name: 'Save correction' }).click();
-    // Observable outcome: the stale edit is NOT saved and the latest text replaces it.
-    // FINDING (reported, not fixed here): the app sets the conflict message and then immediately re-renders the
-    // panel, which clears it, so the parent never sees "Someone else changed this". Tracked as a product follow-up.
+    // The stale edit is NOT saved, the latest text replaces it, and the explanation stays visible after the re-render.
+    await expect(mp.getByText('Someone else changed this while you were editing.', { exact: false })).toBeVisible();
     await expect(mp.getByText('130 words')).toBeVisible();
     await expect(mp.locator('#tx')).toHaveValue(W(130));
     expect((await bb.journal(dad, up.body.id)).journal.corrected.wordCount).toBe(130);
