@@ -155,6 +155,14 @@ test.describe('suite isolation guards', () => {
       const check = crypto.createECDH('prime256v1');
       check.setPrivateKey(Buffer.from(k.privateKey, 'base64url'));
       expect(check.getPublicKey().toString('base64url')).toBe(k.publicKey);
+      // and it really works as a VAPID pair: web-push signs a JWT with it that verifies against the exported public key
+      const h = webpush.getVapidHeaders('https://web.push.apple.com', 'mailto:bb@example.invalid', k.publicKey, k.privateKey, 'aes128gcm');
+      const [, jwt, kHeader] = h.Authorization.match(/^vapid t=([^,]+), k=(.+)$/);
+      expect(kHeader).toBe(k.publicKey);
+      const [head, body, sig] = jwt.split('.');
+      const P = Buffer.from(k.publicKey, 'base64url');
+      const pubKey = crypto.createPublicKey({ key: { kty: 'EC', crv: 'P-256', x: P.subarray(1, 33).toString('base64url'), y: P.subarray(33).toString('base64url') }, format: 'jwk' });
+      expect(crypto.verify('sha256', Buffer.from(`${head}.${body}`), { key: pubKey, dsaEncoding: 'ieee-p1363' }, Buffer.from(sig, 'base64url'))).toBe(true);
     }
     // many random pairs, all accepted
     for (let i = 0; i < 2000; i += 1) {
