@@ -11,10 +11,23 @@ export function makeSubscriptionKeys() {
   return { ecdh, auth, p256dh: b64u(ecdh.getPublicKey()), authB64: b64u(auth) };
 }
 
-export function makeVapidKeys() {
+// Fixed-width P-256 key encodings. Node's ECDH getPrivateKey() returns the scalar WITHOUT leading zero bytes, so
+// about 1 key in 256 comes out 31 bytes (and rarer ones shorter); web-push requires exactly 32 and the server then
+// refuses to start. Always left-pad to 32 (private) / 65 (uncompressed public), as web-push's own generator does.
+export const fixedWidth = (buf, len) => {
+  if (buf.length > len) throw new Error(`key longer than ${len} bytes`);
+  return Buffer.concat([Buffer.alloc(len - buf.length), buf]);
+};
+
+// privateScalar (optional, for tests) pins the private key, e.g. one with a leading zero byte.
+export function makeVapidKeys({ privateScalar } = {}) {
   const ecdh = crypto.createECDH('prime256v1');
-  ecdh.generateKeys();
-  return { publicKey: b64u(ecdh.getPublicKey()), privateKey: b64u(ecdh.getPrivateKey()) };
+  if (privateScalar) ecdh.setPrivateKey(privateScalar);
+  else ecdh.generateKeys();
+  const pub = fixedWidth(ecdh.getPublicKey(), 65);
+  const priv = fixedWidth(ecdh.getPrivateKey(), 32);
+  if (pub.length !== 65 || pub[0] !== 4 || priv.length !== 32) throw new Error('bb: generated VAPID key pair has the wrong shape');
+  return { publicKey: b64u(pub), privateKey: b64u(priv) };
 }
 
 // Decrypts a single-record aes128gcm body. Returns the plaintext string.

@@ -36,6 +36,7 @@
     "suite isolation guards › a non-loopback database URL is refused before any connection is attempted",
     "suite isolation guards › test:all refuses a non-loopback unit or black-box database URL before running anything",
     "suite isolation guards › server ports come from per-worker blocks below the OS ephemeral range; overlap and exhaustion fail clearly",
+    "suite isolation guards › fake VAPID keys are always a valid fixed-width pair, including scalars with leading zero bytes",
     "production mode and startup config › plain http is redirected or refused; forwarded https is served with HSTS",
     "production mode and startup config › startup fails closed on unsafe config; AI stays off without a key",
     "production mode and startup config › an occupied port makes the server exit non-zero, with no \"listening\" line and no retry",

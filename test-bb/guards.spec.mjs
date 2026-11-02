@@ -133,4 +133,34 @@ test.describe('suite isolation guards', () => {
     expect(p).toBeGreaterThanOrEqual(mine.first);
     expect(p).toBeLessThanOrEqual(mine.last);
   });
+
+  test('fake VAPID keys are always a valid fixed-width pair, including scalars with leading zero bytes', async () => {
+    const crypto = await import('node:crypto');
+    const { default: webpush } = await import('web-push');
+    const { makeVapidKeys } = await import('./harness/webpush-decrypt.mjs');
+    // The exact edge case that broke main CI run 41384287192: a private scalar whose first byte is zero (Node then
+    // returns 31 bytes), plus two leading zeros (30 bytes).
+    for (const zeros of [1, 2]) {
+      const sk = crypto.randomBytes(32);
+      sk.fill(0, 0, zeros);
+      sk[zeros] |= 1;
+      const ecdh = crypto.createECDH('prime256v1');
+      ecdh.setPrivateKey(sk);
+      expect(ecdh.getPrivateKey().length).toBe(32 - zeros); // the raw Node behaviour this guards against
+      const k = makeVapidKeys({ privateScalar: sk });
+      expect(Buffer.from(k.privateKey, 'base64url')).toEqual(sk);
+      expect(Buffer.from(k.publicKey, 'base64url').length).toBe(65);
+      expect(() => webpush.setVapidDetails('mailto:bb@example.invalid', k.publicKey, k.privateKey)).not.toThrow();
+      // and the pair matches: the public key derives from the padded private key
+      const check = crypto.createECDH('prime256v1');
+      check.setPrivateKey(Buffer.from(k.privateKey, 'base64url'));
+      expect(check.getPublicKey().toString('base64url')).toBe(k.publicKey);
+    }
+    // many random pairs, all accepted
+    for (let i = 0; i < 2000; i += 1) {
+      const k = makeVapidKeys();
+      expect(Buffer.from(k.privateKey, 'base64url').length).toBe(32);
+      expect(() => webpush.setVapidDetails('mailto:bb@example.invalid', k.publicKey, k.privateKey)).not.toThrow();
+    }
+  });
 });
