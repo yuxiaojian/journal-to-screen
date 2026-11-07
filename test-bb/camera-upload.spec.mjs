@@ -256,7 +256,7 @@ test.describe('layout and accessibility', () => {
     expect(g.blocked).toEqual([]);
   });
 
-  test('parent detail: photo beside the text on desktop, stacked on a phone; photo opens full size', async ({ bb, browser }) => {
+  test('parent detail: photo beside the text on desktop, stacked on a phone', async ({ bb, browser }) => {
     const s = await bb.start({ ai: true });
     const u = await bb.seedFamily('a');
     bb.fakes.scriptAi({ transcript: 'one two three four five six seven eight nine ten '.repeat(7) });
@@ -285,10 +285,77 @@ test.describe('layout and accessibility', () => {
       } else {
         expect(b.y).toBeGreaterThan(a.y + a.height - 1); // text below the photo
       }
-      await expect(mp.getByRole('link', { name: 'Uploaded photo' })).toHaveAttribute('href', `/api/uploads/${up.body.id}/image`);
       expect(await mp.evaluate(() => document.documentElement.scrollWidth <= window.innerWidth)).toBe(true);
       await g.context.close();
     }
+  });
+
+  test('full-size photo: stays in the app, can always be closed, zooms, and leaves an unsaved correction intact', async ({ bb, browser }) => {
+    const s = await bb.start({ ai: true });
+    const u = await bb.seedFamily('a');
+    bb.fakes.scriptAi({ transcript: 'one two three four five six seven eight nine ten '.repeat(7) });
+    const child = await bb.login(s, u.uploader);
+    const up = await bb.upload(child);
+    const p = await bb.login(s, u.parent1);
+    await bb.waitTerminal(p, up.body.id);
+    const g = await guardedBrowserContext(browser, { viewport: { width: 390, height: 844 } });
+    const mp = await g.context.newPage();
+    const cspViolations = [];
+    mp.on('console', (m) => { if (/Content Security Policy/i.test(m.text())) cspViolations.push(m.text()); });
+    let extraPages = 0;
+    g.context.on('page', () => { extraPages += 1; });
+    await mp.goto(`${s.base}/login`);
+    await mp.getByLabel('Username').fill(u.parent1);
+    await mp.getByLabel('Password').fill(PASSWORD);
+    await mp.getByRole('button', { name: 'Sign in' }).click();
+    await expect(mp.getByRole('heading', { name: 'Inbox' })).toBeVisible();
+    await mp.goto(`${s.base}/uploads/${up.body.id}`);
+    const url = mp.url();
+    await mp.getByLabel('Text (edit to correct)').fill('an unsaved correction');
+    const opener = mp.getByRole('button', { name: 'View full size' });
+    await opener.scrollIntoViewIfNeeded();
+    const scrollBefore = await mp.evaluate(() => window.scrollY);
+    await opener.click();
+
+    const viewer = mp.getByRole('dialog', { name: 'Full-size photo' });
+    const full = viewer.getByRole('img', { name: 'Uploaded photo, full size' });
+    const close = viewer.getByRole('button', { name: 'Close' });
+    await expect(full).toBeVisible();
+    await expect.poll(() => full.evaluate((i) => i.complete && i.naturalWidth > 0)).toBe(true);
+    await expect(close).toBeInViewport({ ratio: 1 });
+    const fit = await full.boundingBox();
+    expect(fit.width).toBeLessThanOrEqual(390);
+    expect(fit.y + fit.height).toBeLessThanOrEqual(844);
+
+    await viewer.getByRole('button', { name: 'Zoom in' }).click();
+    await expect.poll(async () => (await full.boundingBox()).width).toBeGreaterThan(390);
+    await expect(close).toBeInViewport({ ratio: 1 }); // the photo scrolls; the Close button does not
+    await viewer.getByRole('button', { name: 'Fit to screen' }).click();
+    await expect.poll(async () => (await full.boundingBox()).width).toBeLessThanOrEqual(390);
+
+    await close.click();
+    await expect(viewer).toBeHidden();
+    expect(mp.url()).toBe(url);
+    expect(extraPages).toBe(0);
+    await expect(mp.getByLabel('Text (edit to correct)')).toHaveValue('an unsaved correction');
+    expect(await mp.evaluate(() => window.scrollY)).toBe(scrollBefore);
+    await expect(opener).toBeFocused();
+
+    await mp.getByRole('img', { name: 'Uploaded photo', exact: true }).click(); // the photo itself opens it too
+    await expect(viewer).toBeVisible();
+    await mp.keyboard.press('Escape');
+    await expect(viewer).toBeHidden();
+
+    await mp.route('**/api/uploads/*/image', (route) => route.abort()); // a failed load still leaves a way out
+    await mp.reload(); // the browser would otherwise reuse the photo it already holds
+    await opener.click();
+    await expect(viewer.getByText("Couldn't load the photo.")).toBeVisible();
+    await expect(close).toBeInViewport({ ratio: 1 });
+    await close.click();
+    await expect(viewer).toBeHidden();
+    expect(cspViolations).toEqual([]);
+    expect(g.blocked).toEqual([]);
+    await g.context.close();
   });
 
   test('login page: labelled fields, inline styles absent, styles come from the stylesheet', async ({ bb, browser }) => {

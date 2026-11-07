@@ -94,7 +94,21 @@ button:disabled { opacity: .55; cursor: not-allowed; }
 .split { display: grid; grid-template-columns: minmax(0, 1fr); gap: 16px; align-items: start; }
 .split > .card { margin: 0; }
 .photo { margin: 0; }
-.photo figcaption { margin-top: 8px; }
+.photo img { cursor: zoom-in; }
+.photo button { margin: 12px 0 0; }
+
+/* full-size photo: fills the screen, Close stays visible clear of the iPhone status bar and home indicator */
+.viewer { width: 100vw; height: 100vh; height: 100dvh; max-width: none; max-height: none; margin: 0; padding: 0; border: 0; background: #111827; color: #fff; }
+.viewer[open] { display: flex; flex-direction: column; }
+.viewer::backdrop { background: #111827; }
+.viewer-bar { display: flex; justify-content: flex-end; gap: 8px; padding: max(8px, env(safe-area-inset-top)) max(12px, env(safe-area-inset-right)) 8px max(12px, env(safe-area-inset-left)); }
+.viewer-bar button { margin: 0; }
+.viewer-pane { flex: 1 1 auto; min-height: 0; overflow: hidden; display: flex; align-items: center; justify-content: center; padding-bottom: env(safe-area-inset-bottom); }
+.viewer-pane img { max-width: 100%; max-height: 100%; width: auto; height: auto; object-fit: contain; border-radius: 0; }
+.viewer-pane.zoomed { overflow: auto; display: block; -webkit-overflow-scrolling: touch; }
+.viewer-pane.zoomed img { width: 200%; max-width: none; max-height: none; }
+.viewer-err { padding: 16px; text-align: center; }
+body:has(.viewer[open]) { overflow: hidden; }
 @media (min-width: 760px) { .split { grid-template-columns: minmax(0, 1fr) minmax(0, 1fr); } }
 .stats .big { font-size: 1.25rem; font-weight: 700; }
 .flags { padding-left: 20px; }

@@ -235,10 +235,13 @@ async function resultView(id, role) {
   }
   const sends = (r.body.sends || []).map((s) => `<li>${esc(s.parent)}: ${esc(STATUS[s.status] || s.status)}</li>`).join('');
   $(`${header('Parent')}<section><p><a href="/" data-link>← Inbox</a></p><div class="head"><h1>Journal page</h1><span class="muted">${esc(new Date(r.body.upload.created_at).toLocaleString())}</span></div>
-    <div class="split"><figure class="card photo"><a href="/api/uploads/${id}/image" target="_blank" rel="noopener"><img alt="Uploaded photo" src="/api/uploads/${id}/image"></a><figcaption class="muted">Open the photo full size to compare.</figcaption></figure>
+    <div class="split"><figure class="card photo"><img id="pt" alt="Uploaded photo" src="/api/uploads/${id}/image"><button type="button" class="secondary" id="po">View full size</button></figure>
     <div class="card" id="jv"></div></div>
-    <details class="card"><summary>Notifications</summary><ul>${sends}</ul><button type="button" id="rs" class="secondary">Resend notifications</button></details></section>`, true);
+    <details class="card"><summary>Notifications</summary><ul>${sends}</ul><button type="button" id="rs" class="secondary">Resend notifications</button></details>
+    <dialog id="pv" class="viewer" aria-label="Full-size photo"><div class="viewer-bar"><button type="button" class="secondary small" id="pz" aria-pressed="false">Zoom in</button><button type="button" class="primary small" id="pc">Close</button></div>
+    <div class="viewer-pane" id="pp" tabindex="0"><img id="pi" alt="Uploaded photo, full size"><p id="pe" class="viewer-err" hidden>Couldn't load the photo. Close this and try again.</p></div></dialog></section>`, true);
   wireLogout();
+  wirePhotoViewer(id);
   document.querySelectorAll('[data-link]').forEach((a) => (a.onclick = (e) => { e.preventDefault(); go('/'); }));
   document.getElementById('rs').onclick = async () => {
     let x = await api(`/api/uploads/${id}/resend`, { method: 'POST', json: {} });
@@ -246,6 +249,33 @@ async function resultView(id, role) {
     resultView(id, role);
   };
   journalPanel(id, j);
+}
+
+// The installed iPhone app has no browser controls, so the photo opens inside the page and always has a Close button.
+// The rest of the page stays mounted underneath, so scroll position and an unsaved correction are untouched.
+function wirePhotoViewer(id) {
+  const pv = document.getElementById('pv');
+  const pi = document.getElementById('pi');
+  const pe = document.getElementById('pe');
+  const pp = document.getElementById('pp');
+  const pz = document.getElementById('pz');
+  const setZoom = (on) => {
+    pp.classList.toggle('zoomed', on);
+    pz.textContent = on ? 'Fit to screen' : 'Zoom in';
+    pz.setAttribute('aria-pressed', String(on));
+    pp.scrollTo(0, 0);
+  };
+  pi.onload = () => { pe.hidden = true; pi.hidden = false; };
+  pi.onerror = () => { pe.hidden = false; pi.hidden = true; };
+  const open = () => {
+    setZoom(false);
+    pi.src = `/api/uploads/${id}/image`;
+    pv.showModal();
+  };
+  document.getElementById('po').onclick = open;
+  document.getElementById('pt').onclick = open;
+  pz.onclick = () => setZoom(!pp.classList.contains('zoomed'));
+  document.getElementById('pc').onclick = () => pv.close();
 }
 
 function journalPanel(id, j, notice = '') {
