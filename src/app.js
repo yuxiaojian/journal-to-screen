@@ -304,8 +304,11 @@ export function createApp({ db, config, pushSender, jobs = null }) {
     res.status(201).json({ id, duplicate: false, sends: await sendSummary(id) });
   });
 
+  const UPLOADS_PAGE = 50;
   app.get('/api/uploads', auth, parent, async (req, res) => {
     await cleanup();
+    const before = req.query.before;
+    if (before !== undefined && (typeof before !== 'string' || !ID_RE.test(before))) throw new HttpError(400, 'bad_request');
     // Deliberately excludes the image column.
     const rows = (await db.query(
       `SELECT up.id, up.created_at, up.byte_size,
@@ -314,11 +317,17 @@ export function createApp({ db, config, pushSender, jobs = null }) {
          (SELECT count(*)::int FROM sends s WHERE s.upload_id = up.id AND s.status='accepted_by_push_service') AS accepted,
          (SELECT count(*)::int FROM sends s WHERE s.upload_id = up.id AND s.status IN ('pending','failed','unknown','sending')) AS needs_attention
        FROM uploads up LEFT JOIN journal_analyses ja ON ja.upload_id = up.id
-       WHERE up.family_id = $1 AND up.expires_at > now() ORDER BY up.created_at DESC LIMIT 50`,
-      [req.user.family_id],
+       WHERE up.family_id = $1 AND up.expires_at > now()
+         ${before ? 'AND (up.created_at, up.id) < (SELECT c.created_at, c.id FROM uploads c WHERE c.id = $3 AND c.family_id = $1)' : ''}
+       ORDER BY up.created_at DESC, up.id DESC LIMIT $2`,
+      before ? [req.user.family_id, UPLOADS_PAGE + 1, before] : [req.user.family_id, UPLOADS_PAGE + 1],
     )).rows;
+    const page = rows.slice(0, UPLOADS_PAGE);
     // The same "not being processed" signal as the detail view, so the inbox never says Reading while AI is off.
-    res.json({ uploads: rows.map((r) => ({ ...r, paused: !aiOn && (r.analysis_status === 'queued' || r.analysis_status === 'processing') })) });
+    res.json({
+      uploads: page.map((r) => ({ ...r, paused: !aiOn && (r.analysis_status === 'queued' || r.analysis_status === 'processing') })),
+      next: rows.length > UPLOADS_PAGE ? page[page.length - 1].id : null,
+    });
   });
 
   async function loadOwned(req, res) {

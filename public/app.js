@@ -155,18 +155,51 @@ async function shrink(file) {
 const CHIP = { queued: 'busy', processing: 'busy', ready: 'ok', needs_review: 'warn', failed: 'bad' };
 async function inboxView(me) {
   const r = await api('/api/uploads');
-  const rows = (r.body.uploads || []).map((u) => {
+  const rows = inboxRows(r.body.uploads);
+  $(`${header(me.username)}<section><div class="head"><h1>Inbox</h1><button type="button" class="secondary small" id="en">Enable notifications</button></div><p id="ns" class="muted" role="status"></p>
+    ${rows ? `<ul class="list" id="ul">${rows}</ul><button type="button" class="secondary" id="older" hidden>Show older</button><p id="om" class="err" role="status" hidden></p>` : '<p class="card">No uploads yet.</p>'}</section>`, true);
+  wireLogout();
+  document.getElementById('en').onclick = enablePush;
+  wireInboxLinks();
+  if (rows) wireOlder(r.body.next);
+}
+
+function inboxRows(uploads) {
+  return (uploads || []).map((u) => {
     const status = u.analysis_status ? (u.paused ? 'Analysis paused; photo available' : (JOURNAL_STATUS[u.analysis_status] || u.analysis_status)) : `${u.accepted} accepted by push service`;
     const cls = u.analysis_status ? (u.paused ? 'muted' : (CHIP[u.analysis_status] || 'muted')) : 'muted';
     const mins = u.suggested_minutes != null ? `<span class="mins">suggested ${Number(u.suggested_minutes)} min</span>` : '';
     const attn = u.needs_attention ? `<span class="muted">${Number(u.needs_attention)} notice(s) need attention</span>` : '';
     return `<li><a class="item" href="/uploads/${u.id}" data-link><span class="when">${esc(new Date(u.created_at).toLocaleString())}</span><span class="chip ${cls}">${esc(status)}</span>${mins}${attn}</a></li>`;
   }).join('');
-  $(`${header(me.username)}<section><div class="head"><h1>Inbox</h1><button type="button" class="secondary small" id="en">Enable notifications</button></div><p id="ns" class="muted" role="status"></p>
-    ${rows ? `<ul class="list">${rows}</ul>` : '<p class="card">No uploads yet.</p>'}</section>`, true);
-  wireLogout();
-  document.getElementById('en').onclick = enablePush;
+}
+
+function wireInboxLinks() {
   document.querySelectorAll('[data-link]').forEach((a) => (a.onclick = (e) => { e.preventDefault(); go(a.getAttribute('href')); }));
+}
+
+function wireOlder(first) {
+  let next = first;
+  const older = document.getElementById('older');
+  const om = document.getElementById('om');
+  older.hidden = !next;
+  older.onclick = async () => {
+    older.disabled = true;
+    om.hidden = true;
+    try {
+      const r = await api('/api/uploads?before=' + encodeURIComponent(next));
+      if (!r.ok) throw new Error('older_failed');
+      document.getElementById('ul').insertAdjacentHTML('beforeend', inboxRows(r.body.uploads));
+      wireInboxLinks();
+      next = r.body.next;
+      older.hidden = !next;
+    } catch {
+      om.textContent = "Couldn't load older pages. Check the connection, then try again.";
+      om.hidden = false;
+    } finally {
+      older.disabled = false;
+    }
+  };
 }
 
 async function enablePush() {

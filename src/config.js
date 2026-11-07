@@ -37,7 +37,7 @@ export function loadConfig(env = process.env) {
       sweepIntervalMs: 60_000,
     },
     familyTz: env.FAMILY_TZ || 'UTC', // display only
-    retentionDays: 7,
+    retentionDays: 90,
     cleanupIntervalMs: 60_000,
     sessionDays: 30,
     pushTimeoutMs: 8000,

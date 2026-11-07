@@ -28,7 +28,7 @@ test(`[${S}] correction: original preserved, count and tier recomputed server-si
   assert.equal(a.corrected_by, t.fam.ids.parent1);
   assert.ok(a.corrected_at);
   const exp2 = (await t.db.query('SELECT expires_at FROM uploads WHERE id = $1', [id])).rows[0].expires_at;
-  assert.equal(new Date(exp2).getTime(), new Date(exp1).getTime()); // correction never renews the 7 days
+  assert.equal(new Date(exp2).getTime(), new Date(exp1).getTime()); // correction never renews the retention period
   assert.equal(t.pushes.length, 2); // correction does not send another push
   // a later correction replaces the corrected columns only
   const r2 = await fix(t, id, t.p2, words(45), j.version);

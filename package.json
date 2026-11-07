@@ -11,6 +11,7 @@
     "test": "node --test --test-concurrency=1 test/*.test.js",
     "genvapid": "node scripts/genvapid.js",
     "seed:local": "node scripts/seed-local.js",
+    "download:images": "node scripts/download-images.js",
     "test:bb": "playwright test",
     "test:all": "node test-bb/harness/check-local-urls.mjs && npm test && npm run test:bb"
   },

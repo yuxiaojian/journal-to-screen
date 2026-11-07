@@ -57,7 +57,7 @@ test.describe('parent correction', () => {
     bb.fakes.scriptAi({ transcript: W(70) });
     const up = await bb.upload(child);
     const d = await bb.waitTerminal(p1, up.body.id);
-    // fixture precondition: move this upload past its 7-day expiry
+    // fixture precondition: move this upload past its expiry
     await bb.sql("UPDATE uploads SET expires_at = now() - interval '1 minute' WHERE id = $1", [up.body.id]);
     expect((await p1.get(`/api/uploads/${up.body.id}`)).status()).toBe(404);
     expect((await p1.get(`/api/uploads/${up.body.id}/image`)).status()).toBe(404);
