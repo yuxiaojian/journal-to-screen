@@ -248,7 +248,7 @@ A browser regression exposed a known correction UX issue: the stale edit is reje
 - Retention is 90 days, including uploads already live at release.
 - Haiku stays. Opus 5.5 was considered and dropped before any code was written. Moving model still needs a request-shape change, because Opus 5.5 rejects the forced `tool_choice` the app sends (per the API reference, not tested live), and a new reservation review (ADR-017).
 - No MCP server and no transcript download were built. The download script handles images only.
-**Pending data step.** Uploads made before v12 keep their old seven-day expiry until this one-off runs. It was approved by the owner, but as of this writing it is not confirmed to have run: `UPDATE uploads SET expires_at = created_at + interval '90 days' WHERE expires_at > now();`. Uploads already expired are not recoverable.
+**Data step (done 2026-11-06, run by the owner).** One transaction on a one-off dyno, reporting aggregates only: `UPDATE uploads SET expires_at = created_at + interval '90 days' WHERE expires_at > now();`. Before: 11 uploads, all live, expiring 2026-11-07 to 2026-11-13. Updated: 11. After: 11 live, expiring 2027-01-29 to 2027-02-04. No upload was expired or lost at that point.
 **Evidence (who produced it).**
 - Main CI run 42338244392 on `8b3d935`: 109 unit tests and 56 black-box scenarios passed, none skipped (automation).
 - Release v12: `/healthz` returned 200, the new client code was being served, and startup logs showed no errors with `ai=on` (project lead, immediately after the release).
@@ -261,4 +261,4 @@ A browser regression exposed a known correction UX issue: the stale edit is reje
 - The script needs the full parent password, because there is no download-only login. Anything that holds it can also read transcripts and make corrections.
 - Saved copies are outside the 90-day expiry, and the app cannot delete them.
 **Process note.** The agent's permission system blocked it from merging, pushing to the hosting app and changing production data, even with owner approval in chat. The owner ran the merges and the release push themselves. Plan for this in future releases.
-**Next.** Run or confirm the pending data step, then the owner's iPhone check and a first production run of the script. No further scope is approved.
+**Next.** The owner's iPhone check and a first production run of the script. No further scope is approved.
