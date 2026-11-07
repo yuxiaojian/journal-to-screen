@@ -25,7 +25,7 @@ Updated 2026-11-02. Current snapshot; detailed design, numbered ADRs and history
 - Handwriting accuracy was waived by the owner and is unverified, not passed.
 - Real OS push delivery and iOS behavior are not automated.
 - One service-worker/push test glitch earlier in Phase 2 remains unexplained (its artifact was not kept). The port-collision cause found alongside it is probably a VPN client using the same local port, not proven.
-- Reload loses a selected photo by design. Seven-day original-upload retention applies; provider retention is separate.
+- Reload loses a selected photo by design. 90-day original-upload retention applies to uploads made after the change; provider retention is separate.
 - USD 5 per UTC month is an app-side reservation ceiling, not an invoice guarantee.
 - Optional helper PR #3 stays unmerged.
 

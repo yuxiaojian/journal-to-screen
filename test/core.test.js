@@ -244,6 +244,13 @@ test(`[${suite}] pending intents survive crash: persisted before send, resend re
   assert.equal(rs.body.sends[0].status, 'accepted_by_push_service');
 });
 
+test(`[${suite}] retention: a new upload expires 90 days after it was made`, async () => {
+  const t = await setup();
+  const r = await upload(t.up, await jpeg());
+  const days = (await t.db.query("SELECT extract(epoch FROM expires_at - created_at) / 86400 AS d FROM uploads WHERE id = $1", [r.body.id])).rows[0].d;
+  assert.ok(Math.abs(Number(days) - 90) < 0.01);
+});
+
 test(`[${suite}] retention: expired uploads removed with sends (cascade)`, async () => {
   const t = await setup();
   t.config.cleanupIntervalMs = 0;
@@ -254,6 +261,41 @@ test(`[${suite}] retention: expired uploads removed with sends (cascade)`, async
   await t.p1.get('/api/uploads'); // triggers request-time cleanup
   assert.equal((await t.db.query('SELECT count(*)::int n FROM uploads')).rows[0].n, 0);
   assert.equal((await t.db.query('SELECT count(*)::int n FROM sends')).rows[0].n, 0);
+});
+
+test(`[${suite}] inbox paging: every upload exactly once, newest first, within the family`, async () => {
+  const t = await setup();
+  const first = await upload(t.up, await jpeg());
+  for (let i = 1; i < 120; i++) {
+    await t.db.query(
+      `INSERT INTO uploads (id, family_id, uploader_id, idempotency_key, image, content_type, byte_size, created_at, expires_at)
+       SELECT $1, family_id, uploader_id, $2, image, content_type, byte_size, created_at - ($3::int * interval '1 minute'), expires_at FROM uploads WHERE id = $4`,
+      [crypto.randomUUID(), key(), i, first.body.id],
+    );
+  }
+  const seen = [];
+  const sizes = [];
+  let next = null;
+  do {
+    const r = await t.p1.get(`/api/uploads${next ? `?before=${next}` : ''}`);
+    assert.equal(r.status, 200);
+    seen.push(...r.body.uploads);
+    sizes.push(r.body.uploads.length);
+    next = r.body.next;
+  } while (next);
+  assert.deepEqual(sizes, [50, 50, 20]);
+  assert.equal(new Set(seen.map((u) => u.id)).size, 120);
+  assert.equal(seen[0].id, first.body.id);
+  for (let i = 1; i < seen.length; i++) assert.ok(new Date(seen[i - 1].created_at) > new Date(seen[i].created_at));
+
+  assert.equal((await t.p1.get('/api/uploads?before=not-an-id')).status, 400);
+  assert.equal((await t.p1.get('/api/uploads?before=a&before=b')).status, 400);
+  const otherParent = agent(t.app);
+  await otherParent.login(t.other.name('parent1'));
+  const cross = await otherParent.get(`/api/uploads?before=${seen[10].id}`);
+  assert.equal(cross.status, 200);
+  assert.deepEqual(cross.body.uploads, []); // another family's id reveals nothing
+  assert.equal(cross.body.next, null);
 });
 
 test(`[${suite}] headers and errors`, async () => {

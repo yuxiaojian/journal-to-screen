@@ -53,6 +53,7 @@
     "reliability › a hanging provider is cut off by the deadline; two attempts at most",
     "reliability › the monthly budget ceiling refuses before any AI call",
     "reliability › a restart mid-reading recovers after the lease, with one result and one push",
-    "reliability › an upload that expires before it is read is never sent to the AI"
+    "reliability › an upload that expires before it is read is never sent to the AI",
+    "inbox paging › Show older reaches every page and goes away at the end; a failed load can be retried"
   ]
 }
