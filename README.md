@@ -1,8 +1,9 @@
 # journal-to-screen
 
-A proof of concept for a Web Push notification relay: a photo uploaded from one
+A private family app: a photo of a handwritten journal page uploaded from one
 phone produces a generic notification on a parent's iPhone Home Screen app, and
-tapping it opens the photo behind a login.
+tapping it opens the photo behind a login. Photos and transcripts expire after
+90 days.
 
 **Scope.** A private photo relay with Web Push notices, plus an optional,
 disabled-by-default journal reading step: one English handwritten page is
@@ -22,5 +23,9 @@ configuration.
 `npx playwright install chromium` once, then `npm run test:bb`; `npm run test:all` runs both,
 as CI does on every pull request. Create users with the private
 local helper `npm run seed:local` (hashes only are sent to the server).
+
+**Saving photos.** `npm run download:images` signs in as a parent and saves any
+photos the output folder lacks to your own machine. It needs `JOURNAL_USERNAME`,
+`JOURNAL_PASSWORD` and `JOURNAL_URL`; pass `--out <folder>` to choose where they go.
 
 Licensed under the [MIT License](LICENSE).

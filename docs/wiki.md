@@ -1,6 +1,6 @@
 # journal-to-screen wiki
 
-Maintained by the project developer; current status and ownership live in `docs/status.md`. **Current state (2026-10-31): Phase 1 is complete and live.** The journal MVP is deployed with analysis enabled; see section 14 for the current state, provenance, evidence and limits. Sections 1-13 record the design and history in order; where an earlier section says "pending", "not deployed" or "untested", section 14 states what has since happened. License: MIT (see `LICENSE`). Provenance: this wiki is the sanitized public export of the project wiki; commit hashes in sections 1-9 refer to the original private development history, which is not published. Superseded statements (kept, dated): 2026-10-30 "core POC achieved with documented validation limits" (relay only); 2026-10-31 "journal MVP implemented locally and disabled by default, not deployed, no paid call made".
+Maintained by the project developer; current status and ownership live in `docs/status.md`. **Current state (2026-11-06): release v12 is live; see section 18.** Sections 14 and 17 record the Phase 1 and Phase 2 closures. Sections 1-13 record the design and history in order; where an earlier section says "pending", "not deployed" or "untested", sections 14, 17 and 18 state what has since happened. License: MIT (see `LICENSE`). Provenance: this wiki is the sanitized public export of the project wiki; commit hashes in sections 1-9 refer to the original private development history, which is not published. Superseded statements (kept, dated): 2026-10-30 "core POC achieved with documented validation limits" (relay only); 2026-10-31 "journal MVP implemented locally and disabled by default, not deployed, no paid call made".
 
 ## 1. PRD (POC)
 Prove the path: harmless photo from an Android phone -> durable upload -> generic Web Push to a subscribed iPhone Home Screen PWA -> exact private result behind login; parent inbox is the fallback. Out of scope: AI, journal scoring, Google sessions, Family Link.
@@ -237,3 +237,28 @@ A browser regression exposed a known correction UX issue: the stale edit is reje
 **Known limits (carried forward).** The capture attribute is a hint; some browsers open a picker. Handwriting accuracy was waived and is unverified. Real OS push delivery and iOS behavior are not automated. A service-worker/push test failure during Phase 2 is unexplained because its artifact was not retained; the separate port-collision explanation is probable (a VPN client using the same local port), not proven. Reload loses a selected photo by design. The USD 5 monthly ceiling is an app-side reservation, not a provider cap.
 **History kept.** Sections 14.6 to 14.8 and section 16 are not rewritten. The Phase 1 follow-up on the hidden conflict message was closed by Phase 2 (section 16); the task table in 14.6 is a 2026-10-31 snapshot.
 **Next.** No deployment or new scope is approved. Any next phase needs a new owner decision.
+
+## 18. Phase 3 (2026-11-06): 90-day retention, inbox paging, image download and photo viewer
+**Current state.** Release v12 is live with analysis enabled on `claude-haiku-5-5`. Deployed source `030321d` maps to tree `77b657a9`, which equals public `main` `8b3d935`. As before, deployment ancestry is separate from public history; compare trees, not hashes. **Rollback:** release v11. There is no schema change, but new uploads would return to seven days while uploads made under v12 keep their 90-day expiry.
+**Delivered.**
+- PR #10: photos and transcripts expire 90 days after upload. `GET /api/uploads` returns 50 at a time with a `next` id passed back as `?before=`, and the inbox has Show older. `scripts/download-images.js` saves photos to the parent's own machine through the existing parent API; it adds no route.
+- PR #11: the photo opens in an in-page viewer with Close and zoom, replacing the new window that stranded the installed Home Screen app.
+- Repository: `main` requires a pull request and a passing `test` check, including for admins, and blocks force pushes and deletion. Required approvals are 0 because GitHub does not let an owner approve their own PR, so this does not enforce owner approval. Dependabot alerts are on.
+**Owner decisions.**
+- Retention is 90 days, including uploads already live at release.
+- Haiku stays. Opus 5.5 was considered and dropped before any code was written. Moving model still needs a request-shape change, because Opus 5.5 rejects the forced `tool_choice` the app sends (per the API reference, not tested live), and a new reservation review (ADR-017).
+- No MCP server and no transcript download were built. The download script handles images only.
+**Pending data step.** Uploads made before v12 keep their old seven-day expiry until this one-off runs. It was approved by the owner, but as of this writing it is not confirmed to have run: `UPDATE uploads SET expires_at = created_at + interval '90 days' WHERE expires_at > now();`. Uploads already expired are not recoverable.
+**Evidence (who produced it).**
+- Main CI run 42338244392 on `8b3d935`: 109 unit tests and 56 black-box scenarios passed, none skipped (automation).
+- Release v12: `/healthz` returned 200, the new client code was being served, and startup logs showed no errors with `ai=on` (project lead, immediately after the release).
+**Not verified.**
+- The viewer on a real iPhone. CI covers headless Chromium only, and the cause of the stranding comes from reading the code, not from reproducing it on a phone.
+- The download script against production. It has run against a test server only.
+- Handwriting accuracy stays waived and unmeasured.
+**Known limits.**
+- Storage has no quota. The database limit is 1 GB, with 11 MB used on 2026-11-06. Sustained uploads above about 5 a day at the full 2 MB would fill it within 90 days.
+- The script needs the full parent password, because there is no download-only login. Anything that holds it can also read transcripts and make corrections.
+- Saved copies are outside the 90-day expiry, and the app cannot delete them.
+**Process note.** The agent's permission system blocked it from merging, pushing to the hosting app and changing production data, even with owner approval in chat. The owner ran the merges and the release push themselves. Plan for this in future releases.
+**Next.** Run or confirm the pending data step, then the owner's iPhone check and a first production run of the script. No further scope is approved.
